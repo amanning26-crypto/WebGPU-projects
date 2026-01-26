@@ -37,6 +37,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         const adapter = await navigator.gpu.requestAdapter();
         let device = await adapter.requestDevice();
 
+        const canvas = document.getElementById("canvas"); 
         const context = canvas.getContext("webgpu"); 
         //const context = configContext(device, canvas);
 
@@ -70,7 +71,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         const pipelineLayoutDesc = { bindGroupLayouts: [] };
         const layout = device.createPipelineLayout(pipelineLayoutDesc);
 
-        const canvas = document.getElementById("canvas"); 
+
         
         context.configure({ 
             device: device, 
