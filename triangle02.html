@@ -48,7 +48,7 @@
       const shaderCode = document.getElementById("shader").textContent;
       const shaderModule = device.createShaderModule({ code: shaderCode });
 
-      // Vertex buffer
+      // Vertex buffer - defines the triangle corners
       const positions = new Float32Array([
         1.0, -1.0, 0.0,
        -1.0, -1.0, 0.0,
