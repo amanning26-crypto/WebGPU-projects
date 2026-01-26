@@ -37,7 +37,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         const adapter = await navigator.gpu.requestAdapter();
         let device = await adapter.requestDevice();
 
-        const context = configContext(device, canvas)
+        const context = canvas.getContext("webgpu"); 
+        //const context = configContext(device, canvas);
 
         // create shaders
         let shaderModule = shaderModuleFromCode(device, 'shader');
@@ -69,8 +70,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         const pipelineLayoutDesc = { bindGroupLayouts: [] };
         const layout = device.createPipelineLayout(pipelineLayoutDesc);
 
+        const canvas = document.getElementById("canvas"); 
+        
+        context.configure({ 
+            device: device, 
+            format: navigator.gpu.getPreferredCanvasFormat() 
+        });
+
         const colorState = {
-            format: 'bgra8unorm'
+            format: navigator.gpu.getPreferredCanvasFormat() //'bgra8unorm'
         };
 
         const pipelineDesc = {
