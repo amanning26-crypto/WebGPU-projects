@@ -22,7 +22,7 @@
 
     @fragment
     fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-      return vec4<f32>(0.3, 0.2, 0.1, 1.0);
+      return vec4<f32>(0.3, 0.9, 0.1, 1.0);
     }
   </script>
 
@@ -50,9 +50,9 @@
 
       // Vertex buffer - defines the triangle corners
       const positions = new Float32Array([
-        1.0, -1.0, 0.0,
-       -1.0, -1.0, 0.0,
-        0.0,  1.0, 0.0
+        .8, -0.8, 0.0,
+       -.7, -.6, 0.0,
+        0.2,  .8, 0.0
       ]);
 
       const positionBuffer = device.createBuffer({
@@ -90,7 +90,7 @@
       const renderPass = commandEncoder.beginRenderPass({
         colorAttachments: [{
           view: textureView,
-          clearValue: { r: 0.9, g: 0.9, b: 0.9, a: 1.0 },
+          clearValue: { r: 0.9, g: 0.2, b: 0.2, a: 1.0 },
           loadOp: "clear",
           storeOp: "store"
         }]
