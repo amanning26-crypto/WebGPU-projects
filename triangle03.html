@@ -66,9 +66,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         };
 
         const positions = new Float32Array([
-            1.0, -1.0, 0.0, 
-            -1.0, -1.0, 0.0, 
-            0.0, 1.0, 0.0
+            0.5, -0.8, 0.0, 
+            -0.8, -0.7, 0.0, 
+            0.1, 0.7, 0.0
         ]);
 
         let positionBuffer = createGPUBuffer(device, positions, GPUBufferUsage.VERTEX);
@@ -77,7 +77,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         const layout = device.createPipelineLayout(pipelineLayoutDesc);
 
         const colorState = {
-            format: 'bgra8unorm'
+            // don't hardcode the format!  
+            format: navigator.gpu.getPreferredCanvasFormat() //'bgra8unorm'
         };
 
         const pipelineDesc = {
