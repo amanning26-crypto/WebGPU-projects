@@ -1,0 +1,237 @@
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU Transform Playground</title>
+</head>
+<body>
+  <canvas id="canvas" width="640" height="480"></canvas>
+</body>
+
+<script src="../utils/utils.js"></script>
+<script src="../utils/gl-matrix.js"></script>
+
+<script id="shader" type="wgsl">
+// Vertex shader
+@group(0) @binding(0)
+var<uniform> u_rotation : mat4x4<f32>;
+@group(0) @binding(1)
+var<uniform> u_translation : mat4x4<f32>;
+@group(0) @binding(4)
+var<uniform> u_projection : mat4x4<f32>;
+
+struct VertexOutput {
+    @builtin(position) clip_position : vec4<f32>,
+    @location(0) tex_coords : vec2<f32>,
+};
+
+@vertex
+fn vs_main(
+    @location(0) inPos : vec3<f32>,
+    @location(1) inTexCoords : vec2<f32>
+) -> VertexOutput {
+    var out : VertexOutput;
+    let model = u_translation * u_rotation;
+    out.clip_position = u_projection * model * vec4<f32>(inPos, 1.0);
+    out.tex_coords = inTexCoords;
+    return out;
+}
+
+// Fragment shader
+@group(0) @binding(2)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(3)
+var s_diffuse: sampler;
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(t_diffuse, s_diffuse, in.tex_coords);
+}
+</script>
+
+<script>
+async function webgpu() {
+  if (!navigator.gpu) {
+    alert("WebGPU not available in this browser.");
+    return;
+  }
+
+  const canvas = document.getElementById("canvas");
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();
+  const context = configContext(device, canvas);
+
+  const texture = await img2texture(device, '../data/baboon.png');
+  const sampler = device.createSampler({
+    addressModeU: 'repeat',
+    addressModeV: 'repeat',
+    magFilter: 'linear',
+    minFilter: 'linear',
+    mipmapFilter: 'linear',
+  });
+
+  const shaderModule = shaderModuleFromCode(device, 'shader');
+
+  const positions = new Float32Array([
+    0.7, -0.7, 0.0,
+    -0.7, -0.7, 0.0,
+    0.0, 0.7, 0.0
+  ]);
+  const texCoords = new Float32Array([
+    1.0, 1.0,
+    0.0, 1.0,
+    0.5, 0.0
+  ]);
+
+  const positionBuffer = createGPUBuffer(device, positions, GPUBufferUsage.VERTEX);
+  const texCoordsBuffer = createGPUBuffer(device, texCoords, GPUBufferUsage.VERTEX);
+
+  // Matrices and buffers
+  let rotateMatrix = glMatrix.mat4.create();
+  let translateMatrix = glMatrix.mat4.create();
+  
+
+  const rotationBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  
+  glMatrix.mat4.identity(rotateMatrix);
+  device.queue.writeBuffer(rotationBuffer, 0, rotateMatrix);
+
+  
+  const translationBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  
+    glMatrix.mat4.fromTranslation(translateMatrix, [0, 0, -2]);
+	device.queue.writeBuffer(translationBuffer, 0, translateMatrix);
+
+
+  
+  const projectionBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // Build perspective projection
+  const proj = glMatrix.mat4.create();
+  glMatrix.mat4.perspective(proj, Math.PI / 3, canvas.width / canvas.height, 0.1, 10.0);
+  device.queue.writeBuffer(projectionBuffer, 0, proj);
+
+  const pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: shaderModule,
+      entryPoint: 'vs_main',
+      buffers: [
+        { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+        { arrayStride: 8, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x2' }] }
+      ]
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: 'fs_main',
+      targets: [{ format: 'bgra8unorm' }]
+    },
+    primitive: { topology: 'triangle-list', frontFace: 'cw', cullMode: 'back' }
+  });
+
+  const uniformBindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: rotationBuffer } },
+      { binding: 1, resource: { buffer: translationBuffer } },
+      { binding: 2, resource: texture.createView() },
+      { binding: 3, resource: sampler },
+      { binding: 4, resource: { buffer: projectionBuffer } }
+    ]
+  });
+
+  // Interaction state
+  let dragging = false;
+  let dragMode = null;
+  let lastX = 0, lastY = 0;
+  let angleX = 0, angleY = 0;
+  let tx = 0, ty = 0;
+
+  canvas.addEventListener("mousedown", e => {
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    if (e.button === 0) dragMode = "translate";
+    else if (e.button === 2) dragMode = "rotate";
+  });
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+  window.addEventListener("mouseup", () => { dragging = false; dragMode = null; });
+
+  window.addEventListener("mousemove", e => {
+    if (!dragging || !dragMode) return;
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+
+    if (dragMode === "translate") {
+      tx += dx * 0.002;
+      ty -= dy * 0.002;
+      glMatrix.mat4.fromTranslation(translateMatrix, [tx, ty, -2]);
+      device.queue.writeBuffer(translationBuffer, 0, translateMatrix);
+    } else if (dragMode === "rotate") {
+      angleX += dy * 0.01;
+      angleY += dx * 0.01;
+
+      let rotX = glMatrix.mat4.create();
+      let rotY = glMatrix.mat4.create();
+      glMatrix.mat4.fromRotation(rotX, angleX, [1,0,0]);
+      glMatrix.mat4.fromRotation(rotY, angleY, [0,1,0]);
+
+      glMatrix.mat4.multiply(rotateMatrix, rotY, rotX);
+      device.queue.writeBuffer(rotationBuffer, 0, rotateMatrix);
+    }
+  });
+
+  // Keyboard resets
+  window.addEventListener("keydown", e => {
+    if (e.key === "t" || e.key === "T") {
+      tx = 0; ty = 0;
+      //glMatrix.mat4.identity(translateMatrix);
+	      glMatrix.mat4.fromTranslation(translateMatrix, [0, 0, -2]);
+      device.queue.writeBuffer(translationBuffer, 0, translateMatrix);
+    }
+    if (e.key === "r" || e.key === "R") {
+      angleX = 0; angleY = 0;
+      glMatrix.mat4.identity(rotateMatrix);
+      device.queue.writeBuffer(rotationBuffer, 0, rotateMatrix);
+    }
+    if (e.code === "Space") {
+      tx = 0; ty = 0; angleX = 0; angleY = 0;
+      //glMatrix.mat4.identity(translateMatrix);
+	      glMatrix.mat4.fromTranslation(translateMatrix, [0, 0, -2]);
+      glMatrix.mat4.identity(rotateMatrix);
+      device.queue.writeBuffer(translationBuffer, 0, translateMatrix);
+      device.queue.writeBuffer(rotationBuffer, 0, rotateMatrix);
+    }
+  });
+
+  // Render loop
+  function frame() {
+    const colorTexture = context.getCurrentTexture();
+    const colorTextureView = colorTexture.createView();
+    const colorAttachment = {
+      view: colorTextureView,
+      clearValue: { r: 0.2, g: 0.2, b: 0.2, a: 1 },
+      loadOp: 'clear',
+      storeOp: 'store'
+    };
+
+    const commandEncoder = device.createCommandEncoder();
+    const passEncoder = commandEncoder.beginRenderPass({ colorAttachments: [colorAttachment] });
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, uniformBindGroup);
+    passEncoder.setVertexBuffer(0, positionBuffer);
+    passEncoder.setVertexBuffer(1, texCoordsBuffer);
+    passEncoder.draw(3, 1);
+    passEncoder.end();
+    device.queue.submit([commandEncoder.finish()]);
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+webgpu();
+</script>
+</html>
