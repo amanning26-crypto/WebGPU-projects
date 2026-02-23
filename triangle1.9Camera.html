@@ -3,30 +3,40 @@
 <body>
     <canvas id="canvas" width="640" height="480"></canvas>
 </body>
-<script src="utils/utils.js"></script>
+<script src="../utils/utils.js"></script>
+<script src="../utils/gl-matrix.js"> 
+//camera
+</script>
 <script id="shader" type="wgsl">
 // Vertex shader
 @group(0) @binding(0)
-var<uniform> offset: vec3<f32>;
+var<uniform> transform: mat4x4<f32>;
+@group(0) @binding(1)
+var<uniform> projection: mat4x4<f32>;
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) tex_coords: vec2<f32>,
 };
 @vertex
 fn vs_main(
     @location(0) inPos: vec3<f32>,
-    @location(1) inColor: vec3<f32>
+    @location(1) inTexCoords: vec2<f32>
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_position = vec4<f32>(inPos + offset, 1.0);
-    out.color = inColor;
+    out.clip_position = projection * transform * vec4<f32>(inPos, 1.0);
+    out.tex_coords = inTexCoords;
     return out;
 }
 // Fragment shader
 
+@group(0) @binding(2)
+var t_diffuse: texture_2d<f32>;
+@group(0) @binding(3)
+var s_diffuse: sampler;
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    return textureSample(t_diffuse, s_diffuse, in.tex_coords);
 }
 
 </script>
@@ -43,9 +53,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let device = await adapter.requestDevice();
         console.log(device);
 
-        const context = configContext(device, canvas)
+        const context = configContext(device, canvas);
 
-        // create shaders
+        const texture = await img2texture(device, '../data/baboon.png');
+
+        const sampler = device.createSampler({
+            addressModeU: 'repeat',
+            addressModeV: 'repeat',
+            magFilter: 'linear',
+            minFilter: 'linear',
+            mipmapFilter: 'linear',
+        });
+
         let shaderModule = shaderModuleFromCode(device, 'shader');
 
         const positionAttribDesc = {
@@ -60,56 +79,96 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             stepMode: 'vertex'
         };
 
-        const colorAttribDesc = {
+        const texCoordsAttribDesc = {
             shaderLocation: 1, // @location(1)
             offset: 0,
-            format: 'float32x3'
+            format: 'float32x2'
         };
 
-        const colorBufferLayoutDesc = {
-            attributes: [colorAttribDesc],
-            arrayStride: 4 * 3, // sizeof(float) * 3
+        const texCoordsBufferLayoutDesc = {
+            attributes: [texCoordsAttribDesc],
+            arrayStride: 4 * 2, // sizeof(float) * 3
             stepMode: 'vertex'
         };
 
         const positions = new Float32Array([
-            1.0, -1.0, 0.0, 
-            -1.0, -1.0, 0.0, 
-            0.0, 1.0, 0.0
+            100.0, -100.0, 0.0,
+            0.0, 100.0, 0.0,
+            -100.0, -100.0, 0.0
         ]);
-
 
         let positionBuffer = createGPUBuffer(device, positions, GPUBufferUsage.VERTEX);
 
-        const colors = new Float32Array([
-            1.0, 0.0,  0.0, // 🔴
-            0.0, 1.0, 0.0, // 🟢
-            0.0, 0.0, 1.0 // 🔵
+        const texCoords = new Float32Array([
+            1.0,
+            0.0,
+            // 🔴
+            0.0,
+            0.0,
+
+            0.5,
+            1.0,
+
         ]);
 
-        let colorBuffer = createGPUBuffer(device, colors, GPUBufferUsage.VERTEX);
-        const uniformData = new Float32Array([
-            0.1, 0.1, 0.1  // r,g,b
-        ]);
+        let texCoordsBuffer = createGPUBuffer(device, texCoords, GPUBufferUsage.VERTEX);
+        let transformationMatrix = glMatrix.mat4.lookAt(glMatrix.mat4.create(), 
+        glMatrix.vec3.fromValues(100, 100, 100), glMatrix.vec3.fromValues(0,0,0), glMatrix.vec3.fromValues(0.0, 0.0, 1.0));
 
-        let uniformBuffer = createGPUBuffer(device, uniformData, GPUBufferUsage.UNIFORM);
+        let projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(), 
+        1.4, 640.0 / 480.0, 0.1, 1000.0);
+        let transformationMatrixUniformBuffer = createGPUBuffer(device, transformationMatrix, GPUBufferUsage.UNIFORM);
+
+        let projectionMatrixUniformBuffer = createGPUBuffer(device, projectionMatrix, GPUBufferUsage.UNIFORM);
+
         let uniformBindGroupLayout = device.createBindGroupLayout({
             entries: [
                 {
                     binding: 0,
                     visibility: GPUShaderStage.VERTEX,
                     buffer: {}
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: {}
+                },
+                {
+                    binding: 2,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    texture: {}
+                },
+                {
+                    binding: 3,
+                    visibility: GPUShaderStage.FRAGMENT,
+                    sampler: {}
                 }
             ]
         });
+
         let uniformBindGroup = device.createBindGroup({
             layout: uniformBindGroupLayout,
             entries: [
                 {
                     binding: 0,
                     resource: {
-                        buffer: uniformBuffer
+                        buffer: transformationMatrixUniformBuffer
                     }
+                },
+                {
+                    binding: 1,
+                    resource: {
+                        buffer: projectionMatrixUniformBuffer
+                    }
+                },
+                {
+                    binding: 2,
+                    resource: texture.createView()
+                },
+                {
+                    binding: 3,
+                    resource:
+                        sampler
                 }
             ]
         });
@@ -125,7 +184,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             vertex: {
                 module: shaderModule,
                 entryPoint: 'vs_main',
-                buffers: [positionBufferLayoutDesc, colorBufferLayoutDesc]
+                buffers: [positionBufferLayoutDesc, texCoordsBufferLayoutDesc]
             },
             fragment: {
                 module: shaderModule,
@@ -134,14 +193,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             },
             primitive: {
                 topology: 'triangle-list',
-                frontFace: 'cw',
+                frontFace: 'ccw',
                 cullMode: 'back'
             }
         };
 
         pipeline = device.createRenderPipeline(pipelineDesc);
 
-        function draw() {
         let colorTexture = context.getCurrentTexture();
         let colorTextureView = colorTexture.createView();
 
@@ -162,21 +220,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         passEncoder.setPipeline(pipeline);
         passEncoder.setBindGroup(0, uniformBindGroup);
         passEncoder.setVertexBuffer(0, positionBuffer);
-        passEncoder.setVertexBuffer(1, colorBuffer);
+        passEncoder.setVertexBuffer(1, texCoordsBuffer);
         passEncoder.draw(3, 1);
         passEncoder.end();
 
         device.queue.submit([commandEncoder.finish()]);
     }
 
-        window.gpuState =  {device, uniformBuffer, draw };
-    }
-
     webgpu();
-
-    function updateGPU(){
-        let { device,uniformBuffer,draw } = window.gpuState;
-    }
 </script>
 
 </html>
