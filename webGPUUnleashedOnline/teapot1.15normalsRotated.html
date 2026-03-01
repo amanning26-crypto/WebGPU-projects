@@ -1,6 +1,7 @@
 <html>
 
 <body>
+    <h3>Mouse interaction added to the teapot demo 1.15</h3>
     <canvas id="canvas" width="640" height="480"></canvas>
 </body>
 <script src="../utils/utils.js"></script>
@@ -162,7 +163,7 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
         const layout = device.createPipelineLayout(pipelineLayoutDesc);
 
         const colorState = {
-            format: 'bgra8unorm'
+            format: navigator.gpu.getPreferredCanvasFormat()  // 'bgra8unorm'
         };
         const pipelineDesc = {
             layout,
@@ -191,54 +192,54 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
 
         function draw() {
-        const depthTextureDesc = {
-            size: [canvas.width, canvas.height, 1],
-            dimension: '2d',
-            format: 'depth24plus-stencil8',
-            usage: GPUTextureUsage.RENDER_ATTACHMENT
-        };
+            const depthTextureDesc = {
+                size: [canvas.width, canvas.height, 1],
+                dimension: '2d',
+                format: 'depth24plus-stencil8',
+                usage: GPUTextureUsage.RENDER_ATTACHMENT
+            };
 
-        let depthTexture = device.createTexture(depthTextureDesc);
-        let depthTextureView = depthTexture.createView();
+            let depthTexture = device.createTexture(depthTextureDesc);
+            let depthTextureView = depthTexture.createView();
 
-        let colorTexture = context.getCurrentTexture();
-        let colorTextureView = colorTexture.createView();
+            let colorTexture = context.getCurrentTexture();
+            let colorTextureView = colorTexture.createView();
 
-        let colorAttachment = {
-            view: colorTextureView,
-            clearValue: { r: 1, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store'
-        };
+            let colorAttachment = {
+                view: colorTextureView,
+                clearValue: { r: 1, g: 0, b: 0, a: 1 },
+                loadOp: 'clear',
+                storeOp: 'store'
+            };
 
-        const depthAttachment = {
-            view: depthTextureView,
-            depthClearValue: 1,
-            depthLoadOp: 'clear',
-            depthStoreOp: 'store',
-            stencilClearValue: 0,
-            stencilLoadOp: 'clear',
-            stencilStoreOp: 'store'
-        };
+            const depthAttachment = {
+                view: depthTextureView,
+                depthClearValue: 1,
+                depthLoadOp: 'clear',
+                depthStoreOp: 'store',
+                stencilClearValue: 0,
+                stencilLoadOp: 'clear',
+                stencilStoreOp: 'store'
+            };
 
-        const renderPassDesc = {
-            colorAttachments: [colorAttachment],
-            depthStencilAttachment: depthAttachment
-        };
-        commandEncoder = device.createCommandEncoder();
+            const renderPassDesc = {
+                colorAttachments: [colorAttachment],
+                depthStencilAttachment: depthAttachment
+            };
+            commandEncoder = device.createCommandEncoder();
 
-        passEncoder = commandEncoder.beginRenderPass(renderPassDesc);
-        passEncoder.setViewport(0, 0, canvas.width, canvas.height, 0, 1);
-        passEncoder.setPipeline(pipeline);
-        passEncoder.setBindGroup(0, uniformBindGroup);
-        passEncoder.setVertexBuffer(0, positionBuffer);
-        passEncoder.setVertexBuffer(1, normalBuffer);
-        passEncoder.setIndexBuffer(indexBuffer, 'uint16');
-        passEncoder.drawIndexed(indexSize);
-        passEncoder.end();
+            passEncoder = commandEncoder.beginRenderPass(renderPassDesc);
+            passEncoder.setViewport(0, 0, canvas.width, canvas.height, 0, 1);
+            passEncoder.setPipeline(pipeline);
+            passEncoder.setBindGroup(0, uniformBindGroup);
+            passEncoder.setVertexBuffer(0, positionBuffer);
+            passEncoder.setVertexBuffer(1, normalBuffer);
+            passEncoder.setIndexBuffer(indexBuffer, 'uint16');
+            passEncoder.drawIndexed(indexSize);
+            passEncoder.end();
 
-        device.queue.submit([commandEncoder.finish()]);
-        }
+            device.queue.submit([commandEncoder.finish()]);
+            }
 
         draw();
 
