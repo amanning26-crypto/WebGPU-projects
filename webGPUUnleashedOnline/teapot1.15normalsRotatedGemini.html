@@ -93,6 +93,8 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
             
             // Update ModelView
             let mvMatrix = glMatrix.mat4.create();
+
+            // combine translation and zoom into one matrix
             glMatrix.mat4.translate(mvMatrix, mvMatrix, [translateX, -translateY, -zoom]);
             glMatrix.mat4.rotateX(mvMatrix, mvMatrix, rotationX);
             glMatrix.mat4.rotateY(mvMatrix, mvMatrix, rotationY);
