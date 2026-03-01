@@ -189,6 +189,8 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
         };
         pipeline = device.createRenderPipeline(pipelineDesc);
 
+
+        function draw() {
         const depthTextureDesc = {
             size: [canvas.width, canvas.height, 1],
             dimension: '2d',
@@ -236,6 +238,10 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
         passEncoder.end();
 
         device.queue.submit([commandEncoder.finish()]);
+        }
+
+        draw();
+
     }
 
     webgpu();
