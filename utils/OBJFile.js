@@ -123,7 +123,7 @@ class OBJFile {
     this._currentModel().vertexNormals.push({ x, y, z });
   }
 
-  _parsePolygon(lineItems) {
+  _parsePolygon1(lineItems) {
     const totalVertices = (lineItems.length - 1);
     if (totalVertices < 3) { throw (`Face statement has less than 3 vertices${this.filePath}${this.lineNumber}`); }
 
@@ -162,6 +162,70 @@ class OBJFile {
     this._currentModel().faces.push(face);
   }
 
+  _parsePolygon(lineItems) {
+    const totalVertices = (lineItems.length - 1);
+    if (totalVertices < 3) { 
+        throw (`Face statement has less than 3 vertices ${this.filePath} ${this.lineNumber}`); 
+    }
+
+    // Temporary array to store all vertices defined in this 'f' line (could be 3, 4, or more)
+    const polygonVertices = [];
+
+    for (let i = 0; i < totalVertices; i += 1) {
+      const vertexString = lineItems[i + 1];
+      const vertexValues = vertexString.split('/');
+
+      if (vertexValues.length < 1 || vertexValues.length > 3) { 
+          throw (`Too many values for a single vertex ${this.filePath} ${this.lineNumber}`); 
+      }
+
+      let vertexIndex = parseInt(vertexValues[0]);
+      let textureCoordsIndex = 0;
+      let vertexNormalIndex = 0;
+      
+      if (vertexValues.length > 1 && (vertexValues[1] !== '')) { textureCoordsIndex = parseInt(vertexValues[1]); }
+      if (vertexValues.length > 2) { vertexNormalIndex = parseInt(vertexValues[2]); }
+
+      if (vertexIndex === 0) { throw 'Faces uses invalid vertex index of 0'; }
+
+      // Handle negative indices (relative referencing in OBJ)
+      if (vertexIndex < 0) { 
+          vertexIndex = this._currentModel().vertices.length + 1 + vertexIndex; 
+      }
+
+      // CHANGE 1: We store the vertex data temporarily to triangulate below
+      polygonVertices.push({
+        vertexIndex,
+        textureCoordsIndex,
+        vertexNormalIndex
+      });
+    }
+
+    // CHANGE 2: TRIANGULATION (The "Triangle Fan" logic)
+    // Instead of pushing one face with 4+ vertices, we push multiple 3-vertex faces.
+    // This allows quads (4 vertices) and N-gons to render correctly in a triangle-list.
+    for (let i = 1; i < polygonVertices.length - 1; i++) {
+      const triangleFace = {
+        material: this.currentMaterial,
+        group: this.currentGroup,
+        smoothingGroup: this.smoothingGroup,
+        // We create a triangle using: 
+        // 1. The very first vertex
+        // 2. The previous vertex in the loop
+        // 3. The current vertex in the loop
+        vertices: [
+          polygonVertices[0],
+          polygonVertices[i],
+          polygonVertices[i + 1]
+        ]
+      };
+      
+      // Push each resulting triangle to the model's face list
+      this._currentModel().faces.push(triangleFace);
+    }
+  }
+
+  
   _parseMtlLib(lineItems) {
     if (lineItems.length >= 2) { this.result.materialLibraries.push(lineItems[1]); }
   }
