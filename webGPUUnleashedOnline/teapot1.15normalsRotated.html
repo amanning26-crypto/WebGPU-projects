@@ -1,0 +1,396 @@
+<html>
+
+<body>
+    <h3>Mouse interaction added to the teapot demo 1.15</h3>
+    <canvas id="canvas" width="640" height="480"></canvas>
+</body>
+<script src="../utils/utils.js"></script>
+<script src="../utils/gl-matrix.js">
+    // the concept of normal, and visualize as color
+</script>
+<script src="../utils/OBJFile.js"> </script>
+<script id="shader" type="wgsl">
+// Vertex shader
+@group(0) @binding(0)
+var<uniform> modelView: mat4x4<f32>;
+@group(0) @binding(1)
+var<uniform> projection: mat4x4<f32>;
+@group(0) @binding(2)
+var<uniform> normal: mat4x4<f32>;
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) normal: vec3<f32>
+};
+
+@vertex
+fn vs_main(
+    @location(0) inPos: vec3<f32>,
+    @location(1) inNormal: vec3<f32>
+) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = projection * modelView * vec4<f32>(inPos, 1.0);
+    out.normal = normalize(normal * vec4<f32>(inNormal, 0.0)).xyz;
+    return out;
+}
+// Fragment shader
+@fragment
+fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0) vec4<f32> {
+    if (face) {
+        var normal:vec3<f32> = normalize(in.normal);
+        return vec4<f32>(normal ,1.0);
+    }
+    else {
+        return vec4<f32>(0.0, 1.0, 0.0 ,1.0);
+    }
+}
+</script>
+
+<script>
+
+ 
+
+
+    //model loading / normal
+    async function webgpu() {
+
+        if (!navigator.gpu) {
+            showWarning("WebGPU support is not available. A WebGPU capable browser is required to run this sample.");
+            throw new Error("WebGPU support is not available");
+        }
+
+        const adapter = await navigator.gpu.requestAdapter();
+        console.log(adapter);
+
+        let device = await adapter.requestDevice();
+        console.log(device);
+
+        const context = canvas.getContext('webgpu');
+
+        const canvasConfig = {
+            device: device,
+            format: navigator.gpu.getPreferredCanvasFormat(),
+            usage:
+                GPUTextureUsage.RENDER_ATTACHMENT,
+            alphaMode: 'opaque'
+        };
+
+        context.configure(canvasConfig);
+
+        let shaderModule = shaderModuleFromCode(device, 'shader');
+
+
+        let { positionBuffer, normalBuffer, indexBuffer, indexSize } = await loadObj(device, '../data/teapot.obj');
+
+
+    // Camera parameters
+        let cameraDistance = 5.0;
+        let cameraRotationX = 0.0;
+        let cameraRotationY = 0.0;
+        let cameraPanX = 0.0;
+        let cameraPanY = 0.0;
+        
+        // Mouse interaction variables
+        let isLeftMouseDown = false;
+        let isRightMouseDown = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        
+        function updateModelViewMatrix() {
+            let modelView = glMatrix.mat4.create();
+            
+            // Apply pan (translation)
+            glMatrix.mat4.translate(modelView, modelView, 
+                glMatrix.vec3.fromValues(cameraPanX, cameraPanY, 0));
+            
+            // Apply rotations
+            glMatrix.mat4.rotateX(modelView, modelView, cameraRotationX);
+            glMatrix.mat4.rotateY(modelView, modelView, cameraRotationY);
+            
+            // Apply distance (zoom)
+            glMatrix.mat4.translate(modelView, modelView, 
+                glMatrix.vec3.fromValues(0, 0, -cameraDistance));
+            
+            // Update uniform buffer
+            device.queue.writeBuffer(modelViewMatrixUniformBuffer, 0, modelView);
+            
+            // Update normal matrix
+            let modelViewInverse = glMatrix.mat4.invert(glMatrix.mat4.create(), modelView);
+            let normalMatrix = glMatrix.mat4.transpose(glMatrix.mat4.create(), modelViewInverse);
+            device.queue.writeBuffer(normalMatrixUniformBuffer, 0, normalMatrix);
+        }
+
+        // Mouse event handlers
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) { // Left button
+                isLeftMouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            } else if (e.button === 2) { // Right button
+                isRightMouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            }
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (e.button === 0) {
+                isLeftMouseDown = false;
+            } else if (e.button === 2) {
+                isRightMouseDown = false;
+            }
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const dx = e.clientX - lastMouseX;
+            const dy = e.clientY - lastMouseY;
+            
+            if (isLeftMouseDown) {
+                // Left drag: pan
+                cameraPanX += dx * 0.01;
+                cameraPanY -= dy * 0.01;
+                updateModelViewMatrix();
+                render();
+            } else if (isRightMouseDown) {
+                // Right drag: rotate
+                cameraRotationY += dx * 0.01;
+                cameraRotationX += dy * 0.01;
+                updateModelViewMatrix();
+                render();
+            }
+            
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            // Wheel: zoom
+            cameraDistance += e.deltaY * 0.001;
+            cameraDistance = Math.max(2.0, Math.min(20.0, cameraDistance)); // Clamp distance
+            updateModelViewMatrix();
+            render();
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault(); // Prevent context menu on right click
+        });
+
+
+
+
+
+        let modelViewMatrix = glMatrix.mat4.lookAt(glMatrix.mat4.create(),
+            glMatrix.vec3.fromValues(3, 3, 3), glMatrix.vec3.fromValues(0, 0, 0), glMatrix.vec3.fromValues(0.0, 0.0, 1.0));
+
+        //https://paroj.github.io/gltut/Illumination/Tut09%20Normal%20Transformation.html
+        let modelViewMatrixInverse = glMatrix.mat4.invert(glMatrix.mat4.create(), modelViewMatrix);
+        let normalMatrix = glMatrix.mat4.transpose(glMatrix.mat4.create(), modelViewMatrixInverse);
+
+
+
+
+        let projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(),
+            1.4, 640.0 / 480.0, 0.1, 1000.0);
+
+        const modelViewMatrixUniformBuffer = createGPUBuffer(device, modelViewMatrix, GPUBufferUsage.UNIFORM);
+
+        const normalMatrixUniformBuffer = createGPUBuffer(device, normalMatrix, GPUBufferUsage.UNIFORM);
+
+        const projectionMatrixUniformBuffer = createGPUBuffer(device, projectionMatrix, GPUBufferUsage.UNIFORM);
+
+        let uniformBindGroupLayout = device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: {}
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: {}
+                },
+                {
+                    binding: 2,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: {}
+                }
+            ]
+        });
+
+        let uniformBindGroup = device.createBindGroup({
+            layout: uniformBindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: {
+                        buffer: modelViewMatrixUniformBuffer
+                    }
+                },
+                {
+                    binding: 1,
+                    resource: {
+                        buffer: projectionMatrixUniformBuffer
+                    }
+                },
+                {
+                    binding: 2,
+                    resource: {
+                        buffer: normalMatrixUniformBuffer
+                    }
+                }
+            ]
+        });
+
+        const positionAttribDesc = {
+            shaderLocation: 0, // @location(0)
+            offset: 0,
+            format: 'float32x3'
+        };
+
+        const positionBufferLayoutDesc = {
+            attributes: [positionAttribDesc],
+            arrayStride: 4 * 3, // sizeof(float) * 3
+            stepMode: 'vertex'
+        };
+        const normalAttribDesc = {
+            shaderLocation: 1, // @location(1)
+            offset: 0,
+            format: 'float32x3'
+        };
+
+        const normalBufferLayoutDesc = {
+            attributes: [normalAttribDesc],
+            arrayStride: 4 * 3, // sizeof(float) * 3
+            stepMode: 'vertex'
+        };
+        const pipelineLayoutDesc = { bindGroupLayouts: [uniformBindGroupLayout] };
+        const layout = device.createPipelineLayout(pipelineLayoutDesc);
+
+        const colorState = {
+            format: navigator.gpu.getPreferredCanvasFormat()  // 'bgra8unorm'
+        };
+        const pipelineDesc = {
+            layout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: 'vs_main',
+                buffers: [positionBufferLayoutDesc, normalBufferLayoutDesc]
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: 'fs_main',
+                targets: [colorState]
+            },
+            primitive: {
+                topology: 'triangle-list',
+                frontFace: 'ccw',
+                cullMode: 'none'
+            },
+            depthStencil: {
+                depthWriteEnabled: true,
+                depthCompare: 'less',
+                format: 'depth24plus-stencil8'
+            }
+        };
+        pipeline = device.createRenderPipeline(pipelineDesc);
+
+
+        function draw() {
+            const depthTextureDesc = {
+                size: [canvas.width, canvas.height, 1],
+                dimension: '2d',
+                format: 'depth24plus-stencil8',
+                usage: GPUTextureUsage.RENDER_ATTACHMENT
+            };
+
+            let depthTexture = device.createTexture(depthTextureDesc);
+            let depthTextureView = depthTexture.createView();
+
+            let colorTexture = context.getCurrentTexture();
+            let colorTextureView = colorTexture.createView();
+
+            let colorAttachment = {
+                view: colorTextureView,
+                clearValue: { r: 1, g: 0, b: 0, a: 1 },
+                loadOp: 'clear',
+                storeOp: 'store'
+            };
+
+            const depthAttachment = {
+                view: depthTextureView,
+                depthClearValue: 1,
+                depthLoadOp: 'clear',
+                depthStoreOp: 'store',
+                stencilClearValue: 0,
+                stencilLoadOp: 'clear',
+                stencilStoreOp: 'store'
+            };
+
+            const renderPassDesc = {
+                colorAttachments: [colorAttachment],
+                depthStencilAttachment: depthAttachment
+            };
+            commandEncoder = device.createCommandEncoder();
+
+            passEncoder = commandEncoder.beginRenderPass(renderPassDesc);
+            passEncoder.setViewport(0, 0, canvas.width, canvas.height, 0, 1);
+            passEncoder.setPipeline(pipeline);
+            passEncoder.setBindGroup(0, uniformBindGroup);
+            passEncoder.setVertexBuffer(0, positionBuffer);
+            passEncoder.setVertexBuffer(1, normalBuffer);
+            passEncoder.setIndexBuffer(indexBuffer, 'uint16');
+            passEncoder.drawIndexed(indexSize);
+            passEncoder.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+            }
+
+
+            // ************************************************************
+            // Mouse interaction
+
+            //  Mouse interaction 
+            let dragging = false;
+            let lastX = 0;
+            let lastY = 0;
+
+            canvas.addEventListener("mousedown", e => {
+                dragging = true;
+                lastX = e.clientX;
+                lastY = e.clientY;
+            });
+
+            window.addEventListener("mouseup", () => dragging = false);
+
+            window.addEventListener("mousemove", e => {
+                if (!dragging) return;
+
+                const dx = e.clientX - lastX;
+                const dy = e.clientY - lastY;
+                lastX = e.clientX;
+                lastY = e.clientY;
+
+                angleY -= dx * 0.01;
+                angleX -= dy * 0.01;
+
+                draw();   // update the display!
+            });
+
+
+            // ***********************************************************
+
+        draw();
+
+
+
+
+    }
+
+    webgpu();
+</script>
+
+</html>

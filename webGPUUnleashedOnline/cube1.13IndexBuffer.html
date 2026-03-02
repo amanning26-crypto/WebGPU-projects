@@ -1,0 +1,367 @@
+<html>
+
+<body>
+    <h3>Click and drag to view the 3D object.  The object's walls are defined by a list 
+        of vertices along with arrays of indices that list the triangle strips that 
+        define the surfaces.  Multiple index arrays will be needed for complex shapes.
+    </h3>
+    <canvas id="canvas" width="640" height="480"></canvas>
+</body>
+<script src="../utils/utils.js"></script>
+<script src="../utils/gl-matrix.js">
+    //index buffer
+</script>
+<script id="shader" type="wgsl">
+// Vertex shader
+
+@group(0) @binding(0)
+var<uniform> transform: mat4x4<f32>;
+@group(0) @binding(1)
+var<uniform> projection: mat4x4<f32>;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>
+};
+
+@vertex
+fn vs_main(
+    @location(0) inPos: vec3<f32>
+) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = projection * transform * vec4<f32>(inPos, 1.0);
+    return out;
+}
+
+// Fragment shader
+// color the object based on the value of face in each fragment
+@fragment
+fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0) vec4<f32> {
+    if (face) {
+        return vec4<f32>(0.0, 0.0, 1.0 ,1.0);  // defines front color of a face
+    }
+    else {
+        return vec4<f32>(0.0, 1.0, 0.0 ,1.0);  // defines back color
+    }
+}
+
+</script>
+
+<script>
+    //index
+    async function webgpu() {
+
+        // ⭐ ADDED: these variables control the rotation state for later mouse rotation
+        let angleX = 0;
+        let angleY = 0;
+
+        function buildTransform() {
+            let m = glMatrix.mat4.create();
+
+            // the lookAt function is critical to rotation control and 3D viewing!
+            /*
+            The lookAt function creates a transformation matrix—specifically a View Matrix—that 
+            defines a camera's position and orientation in 3D space. It essentially transforms 
+            the world so that the "eye" is at the origin 
+            and looking in a specific direction. 
+
+            It requires three primary parameters: 
+
+                Eye (Position): The 3D coordinates where the camera is located.
+                Target (At): The 3D point in the scene the camera is pointed toward.
+                Up (Vector): A vector defining "up" for the camera (usually [0, 1, 0]), 
+                which prevents the camera from spinning around its own axis.
+            */
+            glMatrix.mat4.lookAt(
+                m,
+                glMatrix.vec3.fromValues(300, 300, 300),
+                glMatrix.vec3.fromValues(0, 0, 0),
+                glMatrix.vec3.fromValues(0, 0, 1)
+            );
+
+            glMatrix.mat4.rotateX(m, m, angleX);
+            glMatrix.mat4.rotateY(m, m, angleY);
+
+            return m;
+        }
+
+
+
+
+
+        if (!navigator.gpu) {
+            showWarning("WebGPU support is not available. A WebGPU capable browser is required to run this sample.");
+            throw new Error("WebGPU support is not available");
+        }
+        const adapter = await navigator.gpu.requestAdapter();
+        console.log(adapter);
+
+        let device = await adapter.requestDevice();
+        console.log(device);
+
+        const context = configContext(device, canvas);
+
+        let shaderModule = shaderModuleFromCode(device, 'shader');
+
+        const positionAttribDesc = {
+            shaderLocation: 0, // @location(0)
+            offset: 0,
+            format: 'float32x3'
+        };
+
+        const positionBufferLayoutDesc = {
+            attributes: [positionAttribDesc],
+            arrayStride: 4 * 3, // sizeof(float) * 3
+            stepMode: 'vertex'
+        };
+
+        // define the corners of a cube
+        const positions = new Float32Array([
+            -100.0, 100.0, 0.0,
+            -100.0, 100.0, 100.0,
+
+            100.0, 100.0, 0.0,
+            100.0, 100.0, 150.0,
+
+            100.0, -100.0, 0.0,
+            100.0, -100.0, 200.0,
+
+            -100.0, -100.0, 0.0,
+            -100.0, -100.0, 250.0,
+            0, 0, 300 // middle up halfway-z
+        ]);
+
+        const positionBuffer = createGPUBuffer(device, positions, GPUBufferUsage.VERTEX);
+ 
+        let transformMatrix = buildTransform();
+        let transformUBO = createGPUBuffer(device, transformMatrix, 
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+
+ 
+ 
+        // define the triangle strip using indexes into the positions array
+        // this makes it more efficient for more complex shapes
+        const indices = new Uint16Array([0, 1, 2, 3, 4, 5, 6, 7, 0, 1]);
+
+        const indexBuffer = createGPUBuffer(device, indices, GPUBufferUsage.INDEX);
+
+        // close one end of the cube using more indices
+        // const indices2 = new Uint16Array([3, 1, 5, 7]);
+        // I spent a few hours trying to figure out why one face was coming out wrong
+        // copilot finally helped me with a separate pipeline for the roof indices
+        //   and used triangle-list instead of triangle-strip
+        const indices2 = new Uint16Array([1,8,3, 5,3,8, 7,5,8, 1,7,8 ]); // roof surface?
+
+
+        const index2Buffer = createGPUBuffer(device, indices2, GPUBufferUsage.INDEX);
+        let translateMatrix = glMatrix.mat4.lookAt(glMatrix.mat4.create(),
+            glMatrix.vec3.fromValues(300, 300, 300), 
+            glMatrix.vec3.fromValues(0, 0, 0), 
+            glMatrix.vec3.fromValues(0.0, 0.0, 1.0));
+
+        let projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(),
+            1.4, 640.0 / 480.0, 0.1, 1000.0);
+
+        // not used when mouse interaction enabled
+        let translateMatrixUniformBuffer = createGPUBuffer(device, translateMatrix, GPUBufferUsage.UNIFORM);
+
+        let projectionMatrixUniformBuffer = createGPUBuffer(device, projectionMatrix, GPUBufferUsage.UNIFORM);
+
+        let uniformBindGroupLayout = device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: {}
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX,
+                    buffer: {}
+                }
+            ]
+        });
+
+        let uniformBindGroup = device.createBindGroup({
+            layout: uniformBindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: {
+                        // buffer: translateMatrixUniformBuffer
+                        buffer: transformUBO   // changes by angleX,Y
+                    }
+                },
+                {
+                    binding: 1,
+                    resource: {
+                        buffer: projectionMatrixUniformBuffer
+                    }
+                }
+            ]
+        });
+
+        const pipelineLayoutDesc = { bindGroupLayouts: [uniformBindGroupLayout] };
+        const layout = device.createPipelineLayout(pipelineLayoutDesc);
+
+        const colorState = {
+            format: navigator.gpu.getPreferredCanvasFormat() //'bgra8unorm'
+        };
+
+        const pipelineDesc = {
+            layout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: 'vs_main',
+                buffers: [positionBufferLayoutDesc]
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: 'fs_main',
+                targets: [colorState]
+            },
+            primitive: {
+                topology: 'triangle-strip',
+                stripIndexFormat: 'uint16',
+                frontFace: 'ccw',
+                cullMode: 'none'
+            },
+            depthStencil: {
+                depthWriteEnabled: true,
+                depthCompare: 'less',
+                format: 'depth24plus-stencil8'
+            }
+        };
+
+        pipeline = device.createRenderPipeline(pipelineDesc);
+
+
+// roof pipeline needed due to need for triangle-list instead of -strip
+// otherwise the fourth face of the roof was coming out backwards every time
+const roofPipeline = device.createRenderPipeline({
+    layout,
+    vertex: {
+        module: shaderModule,
+        entryPoint: 'vs_main',
+        buffers: [positionBufferLayoutDesc]
+    },
+    fragment: {
+        module: shaderModule,
+        entryPoint: 'fs_main',
+        targets: [colorState]
+    },
+    primitive: {
+        topology: "triangle-list",   // ⭐ FIX
+        frontFace: "ccw",
+        cullMode: "none"
+    },
+        depthStencil: {
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+        format: 'depth24plus-stencil8'
+    }
+});
+
+
+
+        // 🤔 Create Depth Backing
+        const depthTextureDesc = {
+            size: [canvas.width, canvas.height, 1],
+            dimension: '2d',
+            format: 'depth24plus-stencil8',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT
+        };
+
+        function draw() {
+
+            // rebuild the transform matrix due to any mounse movement
+            transformMatrix = buildTransform();
+            device.queue.writeBuffer(transformUBO, 0, transformMatrix);
+
+
+            let depthTexture = device.createTexture(depthTextureDesc);
+            let depthTextureView = depthTexture.createView();
+
+            let colorTexture = context.getCurrentTexture();
+            let colorTextureView = colorTexture.createView();
+
+            let colorAttachment = {
+                view: colorTextureView,
+                clearValue: { r: 0.8, g: 0.8, b: 0.8, a: 1 },  // clear canvas to this color
+                loadOp: 'clear',
+                storeOp: 'store'
+            };
+
+            const depthAttachment = {
+                view: depthTextureView,
+                depthClearValue: 1,
+                depthLoadOp: 'clear',
+                depthStoreOp: 'store',
+                stencilClearValue: 0,
+                stencilLoadOp: 'clear',
+                stencilStoreOp: 'store'
+            };
+
+            const renderPassDesc = {
+                colorAttachments: [colorAttachment],
+                depthStencilAttachment: depthAttachment
+            };
+            commandEncoder = device.createCommandEncoder();
+            passEncoder = commandEncoder.beginRenderPass(renderPassDesc);
+            passEncoder.setViewport(0, 0, canvas.width, canvas.height, 0, 1);
+            passEncoder.setPipeline(pipeline);
+            passEncoder.setBindGroup(0, uniformBindGroup);
+            passEncoder.setVertexBuffer(0, positionBuffer);
+
+
+            // draw based on number of indices given
+            passEncoder.setIndexBuffer(indexBuffer, 'uint16');
+            passEncoder.drawIndexed( indices.length );
+
+            // draw based on length of indice2 array
+           // passEncoder.setIndexBuffer(index2Buffer, 'uint16');
+            //passEncoder.drawIndexed( indices2.length );
+passEncoder.setPipeline(roofPipeline);
+passEncoder.setIndexBuffer(index2Buffer, 'uint16');
+passEncoder.drawIndexed(indices2.length);
+
+
+            passEncoder.end();
+            device.queue.submit([commandEncoder.finish()]);
+        }
+
+
+        //  Mouse interaction 
+        let dragging = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        canvas.addEventListener("mousedown", e => {
+            dragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+        });
+
+        window.addEventListener("mouseup", () => dragging = false);
+
+        window.addEventListener("mousemove", e => {
+            if (!dragging) return;
+
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX;
+            lastY = e.clientY;
+
+            angleY -= dx * 0.01;
+            angleX -= dy * 0.01;
+
+            draw();   // update the display!
+        });
+
+
+        draw();
+    }
+
+    webgpu();
+</script>
+
+</html>

@@ -1,0 +1,173 @@
+<html>
+<body>
+    <canvas id="canvas" width="640" height="480" style="border: 1px solid black;"></canvas>
+</body>
+<script src="../utils/utils.js"></script>
+<script src="../utils/gl-matrix.js"></script>
+<script src="../utils/OBJFile.js"></script>
+<script id="shader" type="wgsl">
+@group(0) @binding(0) var<uniform> modelView: mat4x4<f32>;
+@group(0) @binding(1) var<uniform> projection: mat4x4<f32>;
+@group(0) @binding(2) var<uniform> normalMat: mat4x4<f32>;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) normal: vec3<f32>
+};
+
+@vertex
+fn vs_main(@location(0) inPos: vec3<f32>, @location(1) inNormal: vec3<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = projection * modelView * vec4<f32>(inPos, 1.0);
+    out.normal = normalize(normalMat * vec4<f32>(inNormal, 0.0)).xyz;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) vec4<f32> {
+    if (face) {
+        return vec4<f32>(normalize(in.normal), 1.0);
+    }
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+</script>
+
+<script>
+    async function webgpu() {
+        if (!navigator.gpu) return;
+
+        const canvas = document.getElementById('canvas');
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+        const context = canvas.getContext('webgpu');
+        const format = navigator.gpu.getPreferredCanvasFormat();
+
+        context.configure({ device, format, alphaMode: 'opaque' });
+
+        const shaderModule = shaderModuleFromCode(device, 'shader');
+      //  const { positionBuffer, normalBuffer, indexBuffer, indexSize } = await loadObj(device, '../data/teapot.obj');
+        const { positionBuffer, normalBuffer, indexBuffer, indexSize } = await loadObj(device, '../data/cartoon_yellow.obj');
+
+        // Camera State
+        let rotationX = 0, rotationY = 0;
+        let translateX = 0, translateY = 0;
+        let zoom = 5.0;
+
+        // Uniform Buffers
+        const mvBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const pBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const nBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+        const bindGroupLayout = device.createBindGroupLayout({
+            entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
+                      { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: {} },
+                      { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: {} }]
+        });
+
+        const bindGroup = device.createBindGroup({
+            layout: bindGroupLayout,
+            entries: [{ binding: 0, resource: { buffer: mvBuffer } },
+                      { binding: 1, resource: { buffer: pBuffer } },
+                      { binding: 2, resource: { buffer: nBuffer } }]
+        });
+
+        const pipeline = device.createRenderPipeline({
+            layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+            vertex: { module: shaderModule, entryPoint: 'vs_main', buffers: [
+                { attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }], arrayStride: 12 },
+                { attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }], arrayStride: 12 }
+            ]},
+            fragment: { module: shaderModule, entryPoint: 'fs_main', targets: [{ format }] },
+            primitive: { topology: 'triangle-list', cullMode: 'none' },
+            depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
+        });
+
+        let depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: 'depth24plus',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT
+        });
+
+        function draw() {
+            // Update Projection
+            const projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(), 1.0, canvas.width / canvas.height, 0.1, 100.0);
+            
+            // Update ModelView
+            let mvMatrix = glMatrix.mat4.create();
+
+            // combine translation and zoom into one matrix
+            glMatrix.mat4.translate(mvMatrix, mvMatrix, [translateX, -translateY, -zoom]);
+            glMatrix.mat4.rotateX(mvMatrix, mvMatrix, rotationX);
+            glMatrix.mat4.rotateY(mvMatrix, mvMatrix, rotationY);
+
+            // Update Normal Matrix
+            let nMatrix = glMatrix.mat4.create();
+            glMatrix.mat4.invert(nMatrix, mvMatrix);
+            glMatrix.mat4.transpose(nMatrix, nMatrix);
+
+            device.queue.writeBuffer(mvBuffer, 0, mvMatrix);
+            device.queue.writeBuffer(pBuffer, 0, projectionMatrix);
+            device.queue.writeBuffer(nBuffer, 0, nMatrix);
+
+            const commandEncoder = device.createCommandEncoder();
+            const pass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: context.getCurrentTexture().createView(),
+                    clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+                    loadOp: 'clear', storeOp: 'store'
+                }],
+                depthStencilAttachment: {
+                    view: depthTexture.createView(),
+                    depthClearValue: 1.0,
+                    depthLoadOp: 'clear', depthStoreOp: 'store'
+                }
+            });
+
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.setVertexBuffer(0, positionBuffer);
+            pass.setVertexBuffer(1, normalBuffer);
+            pass.setIndexBuffer(indexBuffer, 'uint16');
+            pass.drawIndexed(indexSize);
+            pass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+        }
+
+        // --- Input Handling ---
+        canvas.oncontextmenu = (e) => e.preventDefault(); // Prevent right-click menu
+
+        canvas.addEventListener('mousedown', (e) => {
+            const onMouseMove = (moveEvent) => {
+                if (e.button === 0) { // Left Click: Drag
+                    translateX += moveEvent.movementX * 0.01;
+                    translateY += moveEvent.movementY * 0.01;
+                } else if (e.button === 2) { // Right Click: Rotate
+                    rotationY += moveEvent.movementX * 0.01;
+                    rotationX += moveEvent.movementY * 0.01;
+                }
+                draw();
+            };
+
+            const onMouseUp = () => {
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+            };
+
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            zoom += e.deltaY * 0.005;
+            zoom = Math.max(1.0, Math.min(50.0, zoom));
+            draw();
+        }, { passive: false });
+
+        draw(); // Initial draw
+    }
+
+    webgpu();
+</script>
+</html>
