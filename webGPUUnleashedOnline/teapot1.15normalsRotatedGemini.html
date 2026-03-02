@@ -45,7 +45,8 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
         context.configure({ device, format, alphaMode: 'opaque' });
 
         const shaderModule = shaderModuleFromCode(device, 'shader');
-        const { positionBuffer, normalBuffer, indexBuffer, indexSize } = await loadObj(device, '../data/teapot.obj');
+      //  const { positionBuffer, normalBuffer, indexBuffer, indexSize } = await loadObj(device, '../data/teapot.obj');
+        const { positionBuffer, normalBuffer, indexBuffer, indexSize } = await loadObj(device, '../data/cartoon_yellow.obj');
 
         // Camera State
         let rotationX = 0, rotationY = 0;
