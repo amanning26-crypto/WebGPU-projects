@@ -2,6 +2,21 @@
 
 <body>
     <canvas id="canvas" width="640" height="480"></canvas>
+    <div style="position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: white; padding: 10px; border-radius: 5px; font-family: Arial, sans-serif;">
+        <label>
+            <input type="radio" name="controlMode" value="object" checked> Move/Rotate Object
+        </label>
+        <br>
+        <label>
+            <input type="radio" name="controlMode" value="camera"> Move/Rotate Camera
+        </label>
+        <br>
+        <small style="color: #ccc;">
+            Left drag: Translate<br>
+            Right drag: Rotate<br>
+            Wheel: Scale/Zoom
+        </small>
+    </div>
 </body>
 <script src="../utils/gl-matrix.js"></script>
 <script src="../utils/OBJFile.js"></script>
@@ -19,39 +34,44 @@ var<uniform> normalMatrix: mat4x4<f32>;
 var<uniform> lightDirection: vec3<f32>;
 @group(0) @binding(4)
 var<uniform> viewDirection: vec3<f32>;
-const ambientColor:vec4<f32> = vec4<f32>(0.1, 0.1, 0.1, 1.0);
-const diffuseColor:vec4<f32> = vec4<f32>(0.6, 0.6, 0.6, 1.0);
-const specularColor:vec4<f32> = vec4<f32>(.95, .95, 1.0, 1.0);
 
-const shininess:f32 = 80.0;
-const diffuseConstant:f32 = 0.8;
-const specularConstant:f32 = 1.2;
-const ambientConstant: f32 = 0.3;
-fn specular(lightDir:vec3<f32>, viewDir:vec3<f32>, normal:vec3<f32>,  specularColor:vec3<f32>, 
-     shininess:f32) -> vec3<f32> {
-    var reflectDir:vec3<f32> = reflect(-lightDir, normal);
-    var specDot:f32 = max(dot(reflectDir, viewDir), 0.0);
+// Silver material properties
+const ambientColor: vec4<f32> = vec4<f32>(0.1, 0.1, 0.1, 1.0);
+const diffuseColor: vec4<f32> = vec4<f32>(0.65, 0.65, 0.7, 1.0);
+const specularColor: vec4<f32> = vec4<f32>(0.95, 0.95, 1.0, 1.0);
+
+const shininess: f32 = 90.0;
+const diffuseConstant: f32 = 0.7;
+const specularConstant: f32 = 1.5;
+const ambientConstant: f32 = 0.2;
+
+fn specular(lightDir: vec3<f32>, viewDir: vec3<f32>, normal: vec3<f32>, specularColor: vec3<f32>, shininess: f32) -> vec3<f32> {
+    var reflectDir: vec3<f32> = reflect(-lightDir, normal);
+    var specDot: f32 = max(dot(reflectDir, viewDir), 0.0);
     return pow(specDot, shininess) * specularColor;
 }
-fn diffuse(lightDir:vec3<f32>, normal:vec3<f32>,  diffuseColor:vec3<f32>) -> vec3<f32>{
+
+fn diffuse(lightDir: vec3<f32>, normal: vec3<f32>, diffuseColor: vec3<f32>) -> vec3<f32> {
     return max(dot(lightDir, normal), 0.0) * diffuseColor;
 }
+
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec3<f32>
 };
+
 @vertex
 fn vs_main(
     @location(0) inPos: vec3<f32>,
     @location(1) inNormal: vec3<f32>
 ) -> VertexOutput {
 
-    var n:vec3<f32> = normalize((normalMatrix * vec4<f32>(inNormal, 0.0)).xyz);
-    var viewDir:vec3<f32> = normalize((normalMatrix * vec4<f32>(-viewDirection, 0.0)).xyz);
-    var lightDir:vec3<f32> = normalize((normalMatrix * vec4<f32>(-lightDirection, 0.0)).xyz);
+    var n: vec3<f32> = normalize((normalMatrix * vec4<f32>(inNormal, 0.0)).xyz);
+    var viewDir: vec3<f32> = normalize((normalMatrix * vec4<f32>(-viewDirection, 0.0)).xyz);
+    var lightDir: vec3<f32> = normalize((normalMatrix * vec4<f32>(-lightDirection, 0.0)).xyz);
 
-    var radiance:vec3<f32>  = ambientColor.rgb * ambientConstant + 
-        diffuse(lightDir, n, diffuseColor.rgb)* diffuseConstant +
+    var radiance: vec3<f32> = ambientColor.rgb * ambientConstant + 
+        diffuse(lightDir, n, diffuseColor.rgb) * diffuseConstant +
         specular(lightDir, viewDir, n, specularColor.rgb, shininess) * specularConstant;
   
     var out: VertexOutput;
@@ -59,13 +79,12 @@ fn vs_main(
     out.color = radiance;
     return out;
 }
+
 // Fragment shader
-
 @fragment
-fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color ,1.0);
+fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 1.0);
 }
-
 </script>
 
 <script>
@@ -76,24 +95,38 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
     let lightDirectionUniformBuffer, viewDirectionUniformBuffer, uniformBindGroup;
     let depthTexture, depthTextureView;
     
-    // Camera control variables
-    let rotationX = 0;
-    let rotationY = 0;
-    let zoom = 3;
-    let translationX = 0;
-    let translationY = 0;
+    // Control mode
+    let controlMode = 'object'; // 'object' or 'camera'
+    
+    // Object transformation variables
+    let objRotationX = 0;
+    let objRotationY = 0;
+    let objTranslationX = 0;
+    let objTranslationY = 0;
+    let objScale = 1.0;
+    
+    // Camera transformation variables
+    let camRotationX = 0;
+    let camRotationY = 0;
+    let camTranslationX = 0;
+    let camTranslationY = 0;
+    let camDistance = 5.0;
+    
+    // Mouse state
     let isLeftDragging = false;
     let isRightDragging = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
     
     // Matrices
+    let modelMatrix = glMatrix.mat4.create();
+    let viewMatrix = glMatrix.mat4.create();
     let modelViewMatrix = glMatrix.mat4.create();
-    let rotationMatrix = glMatrix.mat4.create();
-    let translationMatrix = glMatrix.mat4.create();
-    let panMatrix = glMatrix.mat4.create();
     let normalMatrix = glMatrix.mat4.create();
     let projectionMatrix = glMatrix.mat4.create();
+    
+    // Light position (fixed in world space)
+    const lightPosition = glMatrix.vec3.fromValues(2.0, 3.0, 4.0);
 
     //model loading / phong / per vertex
     async function webgpu() {
@@ -111,17 +144,9 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
         context = configContext(device, canvas);
 
-        const sampler = device.createSampler({
-            addressModeU: 'repeat',
-            addressModeV: 'repeat',
-            magFilter: 'linear',
-            minFilter: 'linear',
-            mipmapFilter: 'linear',
-        });
-
         let shaderModule = shaderModuleFromCode(device, 'shader');
 
-        let objData = await loadObj(device, '../data/cartoon_yellow.obj');
+        let objData = await loadObj(device, '../data/teapot.obj');
         positionBuffer = objData.positionBuffer;
         normalBuffer = objData.normalBuffer;
         indexBuffer = objData.indexBuffer;
@@ -138,10 +163,10 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
         normalMatrixUniformBuffer = createGPUBuffer(device, normalMatrix, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         projectionMatrixUniformBuffer = createGPUBuffer(device, projectionMatrix, GPUBufferUsage.UNIFORM);
         
-        let lightDirectionBuffer = new Float32Array([-1.0, -1.0, -1.0]);
+        let lightDirectionBuffer = new Float32Array([lightPosition[0], lightPosition[1], lightPosition[2]]);
         lightDirectionUniformBuffer = createGPUBuffer(device, lightDirectionBuffer, GPUBufferUsage.UNIFORM);
         
-        viewDirectionUniformBuffer = createGPUBuffer(device, new Float32Array([-1.0, -1.0, -1.0]), GPUBufferUsage.UNIFORM);
+        viewDirectionUniformBuffer = createGPUBuffer(device, new Float32Array([0, 0, 1]), GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         
         let uniformBindGroupLayout = device.createBindGroupLayout({
             entries: [
@@ -232,6 +257,9 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
         depthTexture = device.createTexture(depthTextureDesc);
         depthTextureView = depthTexture.createView();
 
+        // Setup UI controls
+        setupUIControls();
+        
         // Setup mouse event listeners
         setupMouseControls();
         
@@ -240,27 +268,88 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
     }
 
     function updateViewMatrix() {
-        // Create rotation matrix from accumulated rotations
-        glMatrix.mat4.identity(rotationMatrix);
-        glMatrix.mat4.rotateX(rotationMatrix, rotationMatrix, rotationX);
-        glMatrix.mat4.rotateY(rotationMatrix, rotationMatrix, rotationY);
-        
-        // Create pan matrix for translation
-        glMatrix.mat4.identity(panMatrix);
-        glMatrix.mat4.translate(panMatrix, panMatrix, [translationX, translationY, 0]);
-        
-        // Create translation matrix for zoom
-        glMatrix.mat4.identity(translationMatrix);
-        glMatrix.mat4.translate(translationMatrix, translationMatrix, [0, 0, -zoom]);
-        
-        // Combine: modelView = translation * rotation * pan
-        // Order matters: pan first (local translation), then rotation, then zoom translation
-        glMatrix.mat4.multiply(modelViewMatrix, translationMatrix, rotationMatrix);
-        glMatrix.mat4.multiply(modelViewMatrix, modelViewMatrix, panMatrix);
+        if (controlMode === 'object') {
+            // Object transformation
+            // Model matrix: translate * rotate * scale
+            glMatrix.mat4.identity(modelMatrix);
+            glMatrix.mat4.translate(modelMatrix, modelMatrix, [objTranslationX, objTranslationY, 0]);
+            glMatrix.mat4.rotateX(modelMatrix, modelMatrix, objRotationX);
+            glMatrix.mat4.rotateY(modelMatrix, modelMatrix, objRotationY);
+            glMatrix.mat4.scale(modelMatrix, modelMatrix, [objScale, objScale, objScale]);
+            
+            // View matrix: fixed camera looking at origin
+            glMatrix.mat4.lookAt(viewMatrix, 
+                glMatrix.vec3.fromValues(0, 0, camDistance), 
+                glMatrix.vec3.fromValues(0, 0, 0), 
+                glMatrix.vec3.fromValues(0, 1, 0));
+            
+            // ModelView matrix
+            glMatrix.mat4.multiply(modelViewMatrix, viewMatrix, modelMatrix);
+            
+            // Update view direction for lighting (from camera to origin in view space)
+            let viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+                glMatrix.vec3.fromValues(0, 0, -camDistance));
+            device.queue.writeBuffer(viewDirectionUniformBuffer, 0, viewDir);
+            
+        } else {
+            // Camera transformation
+            // Model matrix: identity (object at origin)
+            glMatrix.mat4.identity(modelMatrix);
+            
+            // View matrix: camera with translation and rotation
+            glMatrix.mat4.identity(viewMatrix);
+            
+            // Apply camera transformations (inverse of camera movement)
+            glMatrix.mat4.rotateX(viewMatrix, viewMatrix, -camRotationX);
+            glMatrix.mat4.rotateY(viewMatrix, viewMatrix, -camRotationY);
+            glMatrix.mat4.translate(viewMatrix, viewMatrix, 
+                [-camTranslationX, -camTranslationY, -camDistance]);
+            
+            // ModelView matrix
+            glMatrix.mat4.multiply(modelViewMatrix, viewMatrix, modelMatrix);
+            
+            // Update view direction for lighting (camera look direction in view space)
+            let viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+                glMatrix.vec3.fromValues(0, 0, 1));
+            device.queue.writeBuffer(viewDirectionUniformBuffer, 0, viewDir);
+        }
         
         // Update normal matrix
         let modelViewMatrixInverse = glMatrix.mat4.invert(glMatrix.mat4.create(), modelViewMatrix);
         glMatrix.mat4.transpose(normalMatrix, modelViewMatrixInverse);
+        
+        // Update light direction (transform light position to view space)
+        let lightPos = glMatrix.vec4.fromValues(lightPosition[0], lightPosition[1], lightPosition[2], 1.0);
+        let lightPosView = glMatrix.vec4.create();
+        glMatrix.vec4.transformMat4(lightPosView, lightPos, viewMatrix);
+        let lightDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+            glMatrix.vec3.fromValues(lightPosView[0], lightPosView[1], lightPosView[2]));
+        device.queue.writeBuffer(lightDirectionUniformBuffer, 0, lightDir);
+    }
+
+    function setupUIControls() {
+        const radios = document.getElementsByName('controlMode');
+        radios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                controlMode = e.target.value;
+                // Reset view to keep object visible when switching modes
+                if (controlMode === 'object') {
+                    camDistance = 5.0;
+                    camRotationX = 0;
+                    camRotationY = 0;
+                    camTranslationX = 0;
+                    camTranslationY = 0;
+                } else {
+                    objScale = 1.0;
+                    objRotationX = 0;
+                    objRotationY = 0;
+                    objTranslationX = 0;
+                    objTranslationY = 0;
+                }
+                updateViewMatrix();
+                render();
+            });
+        });
     }
 
     function setupMouseControls() {
@@ -285,20 +374,31 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
             const deltaX = e.clientX - lastMouseX;
             const deltaY = e.clientY - lastMouseY;
+            const panSpeed = 0.01;
+            const rotSpeed = 0.01;
 
             if (isLeftDragging) {
-                // Left drag: translate (pan) the object
-                // Scale factor to make pan speed reasonable
-                const panSpeed = 0.01;
-                translationX += deltaX * panSpeed;
-                translationY -= deltaY * panSpeed; // Invert Y for natural feel
+                // Left drag: translate
+                if (controlMode === 'object') {
+                    objTranslationX += deltaX * panSpeed;
+                    objTranslationY -= deltaY * panSpeed;
+                } else {
+                    camTranslationX += deltaX * panSpeed;
+                    camTranslationY -= deltaY * panSpeed;
+                }
             } else if (isRightDragging) {
-                // Right drag: rotate around X and Y axes
-                rotationY += deltaX * 0.01;
-                rotationX += deltaY * 0.01;
-                
-                // Clamp rotation X to avoid gimbal lock
-                rotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotationX));
+                // Right drag: rotate
+                if (controlMode === 'object') {
+                    objRotationY += deltaX * rotSpeed;
+                    objRotationX += deltaY * rotSpeed;
+                    // Clamp rotation X
+                    objRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, objRotationX));
+                } else {
+                    camRotationY += deltaX * rotSpeed;
+                    camRotationX += deltaY * rotSpeed;
+                    // Clamp camera rotation
+                    camRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, camRotationX));
+                }
             }
 
             lastMouseX = e.clientX;
@@ -310,26 +410,34 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
         canvas.addEventListener('mouseup', (e) => {
             e.preventDefault();
-            if (e.button === 0) { // Left button
+            if (e.button === 0) {
                 isLeftDragging = false;
-            } else if (e.button === 2) { // Right button
+            } else if (e.button === 2) {
                 isRightDragging = false;
             }
         });
 
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
-            zoom += e.deltaY * 0.001;
-            zoom = Math.max(1, Math.min(10, zoom)); // Limit zoom range
+            const scaleSpeed = 0.001;
+            const zoomSpeed = 0.1;
+            
+            if (controlMode === 'object') {
+                objScale += e.deltaY * scaleSpeed;
+                objScale = Math.max(0.1, Math.min(5.0, objScale));
+            } else {
+                camDistance += e.deltaY * zoomSpeed;
+                camDistance = Math.max(1.0, Math.min(20.0, camDistance));
+            }
+            
             updateViewMatrix();
             render();
         });
 
         canvas.addEventListener('contextmenu', (e) => {
-            e.preventDefault(); // Prevent context menu on right click
+            e.preventDefault();
         });
 
-        // Handle mouse leaving the canvas
         canvas.addEventListener('mouseleave', () => {
             isLeftDragging = false;
             isRightDragging = false;
@@ -383,7 +491,7 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
         device.queue.submit([commandEncoder.finish()]);
     }
- 
+
     webgpu();
 </script>
 
