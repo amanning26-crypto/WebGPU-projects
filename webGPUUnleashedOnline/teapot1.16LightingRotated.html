@@ -19,14 +19,14 @@ var<uniform> normalMatrix: mat4x4<f32>;
 var<uniform> lightDirection: vec3<f32>;
 @group(0) @binding(4)
 var<uniform> viewDirection: vec3<f32>;
-const ambientColor:vec4<f32> = vec4<f32>(0.15, 0.0, 0.0, 1.0);
-const diffuseColor:vec4<f32> = vec4<f32>(0.25, 0.25, 0.25, 1.0);
-const specularColor:vec4<f32> = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+const ambientColor:vec4<f32> = vec4<f32>(0.1, 0.1, 0.1, 1.0);
+const diffuseColor:vec4<f32> = vec4<f32>(0.6, 0.6, 0.6, 1.0);
+const specularColor:vec4<f32> = vec4<f32>(.95, .95, 1.0, 1.0);
 
 const shininess:f32 = 80.0;
-const diffuseConstant:f32 = 1.0;
-const specularConstant:f32 = 1.0;
-const ambientConstant: f32 = 1.0;
+const diffuseConstant:f32 = 0.8;
+const specularConstant:f32 = 1.2;
+const ambientConstant: f32 = 0.3;
 fn specular(lightDir:vec3<f32>, viewDir:vec3<f32>, normal:vec3<f32>,  specularColor:vec3<f32>, 
      shininess:f32) -> vec3<f32> {
     var reflectDir:vec3<f32> = reflect(-lightDir, normal);
