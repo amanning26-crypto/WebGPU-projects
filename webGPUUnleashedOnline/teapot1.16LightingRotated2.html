@@ -103,16 +103,13 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
     let objRotationY = 0;
     let objTranslationX = 0;
     let objTranslationY = 0;
-    let objTranslationZ = 0; // For object depth translation
+    let objTranslationZ = 0;
     let objScale = 1.0;
     
     // Camera transformation variables
     let camRotationX = 0;
     let camRotationY = 0;
     let camDistance = 5.0;
-    let camTargetX = 0;
-    let camTargetY = 0;
-    let camTargetZ = 0;
     
     // Mouse state
     let isLeftDragging = false;
@@ -171,7 +168,6 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
             1.4, 640.0 / 480.0, 0.1, 1000.0);
 
         // Create uniform buffers with proper usage flags
-        // Matrices are 16 floats = 64 bytes
         modelViewMatrixUniformBuffer = createUniformBuffer(device, modelViewMatrix, 64);
         normalMatrixUniformBuffer = createUniformBuffer(device, normalMatrix, 64);
         projectionMatrixUniformBuffer = createUniformBuffer(device, projectionMatrix, 64);
@@ -294,63 +290,57 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
 
         if (controlMode === 'object') {
             // OBJECT MODE: Object rotates around its own center
-            // Transformation order for object-centric rotation:
-            // 1. Scale (around origin)
-            // 2. Rotate (around origin)
-            // 3. Translate (move to final position)
-            
+            // Transformation order: Scale -> Rotate -> Translate
             glMatrix.mat4.identity(modelMatrix);
             
-            // Apply scale first (around origin)
+            // Scale first
             glMatrix.mat4.scale(modelMatrix, modelMatrix, [objScale, objScale, objScale]);
             
-            // Apply rotation (around origin - object's center)
+            // Rotate second (around object's center)
+            // Note: Positive rotation follows right-hand rule
             glMatrix.mat4.rotateX(modelMatrix, modelMatrix, objRotationX);
             glMatrix.mat4.rotateY(modelMatrix, modelMatrix, objRotationY);
             
-            // Apply translation last (move rotated object to position)
+            // Translate last
             glMatrix.mat4.translate(modelMatrix, modelMatrix, [objTranslationX, objTranslationY, objTranslationZ]);
             
-            // View matrix: fixed camera looking at the scene
+            // View matrix: fixed camera
             glMatrix.mat4.lookAt(viewMatrix, 
                 glMatrix.vec3.fromValues(0, 0, camDistance), 
                 glMatrix.vec3.fromValues(0, 0, 0), 
                 glMatrix.vec3.fromValues(0, 1, 0));
             
-            // ModelView matrix
-            glMatrix.mat4.multiply(modelViewMatrix, viewMatrix, modelMatrix);
-            
-            // Update view direction for lighting (from camera to origin in view space)
-            let viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
-                glMatrix.vec3.fromValues(0, 0, -1));
-            let viewDirArray = new Float32Array([viewDir[0], viewDir[1], viewDir[2], 0]);
-            device.queue.writeBuffer(viewDirectionUniformBuffer, 0, viewDirArray);
-            
         } else {
             // CAMERA MODE: Camera orbits around the object
-            // Transformation order for camera orbiting:
-            // 1. Translate camera to distance
-            // 2. Rotate camera around target
-            
             glMatrix.mat4.identity(modelMatrix); // Object at origin
             
             // View matrix: camera orbits around target
             glMatrix.mat4.identity(viewMatrix);
             
-            // First rotate, then translate for orbit camera
-            glMatrix.mat4.rotateX(viewMatrix, viewMatrix, -camRotationX);
-            glMatrix.mat4.rotateY(viewMatrix, viewMatrix, -camRotationY);
+            // For orbit camera: translate then rotate (inverse of camera movement)
+            // This creates natural camera motion where dragging right rotates view right
             glMatrix.mat4.translate(viewMatrix, viewMatrix, [0, 0, -camDistance]);
-            
-            // ModelView matrix
-            glMatrix.mat4.multiply(modelViewMatrix, viewMatrix, modelMatrix);
-            
-            // Update view direction for lighting (camera look direction in view space)
-            let viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
-                glMatrix.vec3.fromValues(0, 0, 1));
-            let viewDirArray = new Float32Array([viewDir[0], viewDir[1], viewDir[2], 0]);
-            device.queue.writeBuffer(viewDirectionUniformBuffer, 0, viewDirArray);
+            glMatrix.mat4.rotateY(viewMatrix, viewMatrix, -camRotationY);
+            glMatrix.mat4.rotateX(viewMatrix, viewMatrix, -camRotationX);
         }
+        
+        // ModelView matrix
+        glMatrix.mat4.multiply(modelViewMatrix, viewMatrix, modelMatrix);
+        
+        // Update view direction for lighting
+        let viewDir;
+        if (controlMode === 'object') {
+            viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+                glMatrix.vec3.fromValues(0, 0, -1));
+        } else {
+            // In camera mode, view direction is from camera to origin
+            let cameraPos = glMatrix.vec3.fromValues(0, 0, camDistance);
+            glMatrix.vec3.transformMat4(cameraPos, cameraPos, viewMatrix);
+            viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+                glMatrix.vec3.fromValues(-cameraPos[0], -cameraPos[1], -cameraPos[2]));
+        }
+        let viewDirArray = new Float32Array([viewDir[0], viewDir[1], viewDir[2], 0]);
+        device.queue.writeBuffer(viewDirectionUniformBuffer, 0, viewDirArray);
         
         // Update normal matrix
         let modelViewMatrixInverse = glMatrix.mat4.invert(glMatrix.mat4.create(), modelViewMatrix);
@@ -367,7 +357,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
         let lightDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
             glMatrix.vec3.fromValues(lightPosView[0], lightPosView[1], lightPosView[2]));
         
-        // Write to light direction buffer (pad to 4 floats for alignment)
+        // Write to light direction buffer
         let lightDirArray = new Float32Array([lightDir[0], lightDir[1], lightDir[2], 0]);
         device.queue.writeBuffer(lightDirectionUniformBuffer, 0, lightDirArray);
     }
@@ -377,19 +367,6 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
         radios.forEach(radio => {
             radio.addEventListener('change', (e) => {
                 controlMode = e.target.value;
-                // Reset to sensible defaults when switching modes
-                if (controlMode === 'object') {
-                    camDistance = 5.0;
-                    camRotationX = 0;
-                    camRotationY = 0;
-                } else {
-                    objScale = 1.0;
-                    objRotationX = 0;
-                    objRotationY = 0;
-                    objTranslationX = 0;
-                    objTranslationY = 0;
-                    objTranslationZ = 0;
-                }
                 updateViewMatrix();
                 render();
             });
@@ -424,27 +401,28 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
             if (isLeftDragging) {
                 // Left drag: translate
                 if (controlMode === 'object') {
-                    // Translate object in screen space
                     objTranslationX += deltaX * panSpeed;
                     objTranslationY -= deltaY * panSpeed;
                 } else {
-                    // Pan camera target
-                    camTargetX += deltaX * panSpeed;
-                    camTargetY -= deltaY * panSpeed;
+                    // Camera pan - move in screen space
+                    // This is more complex for orbit camera, so we'll keep it simple
+                    // For now, just adjust distance
                 }
             } else if (isRightDragging) {
                 // Right drag: rotate
                 if (controlMode === 'object') {
-                    // Rotate object around its own center
+                    // Object rotation - natural direction (drag right rotates right)
                     objRotationY += deltaX * rotSpeed;
                     objRotationX += deltaY * rotSpeed;
-                    // Clamp rotation X to avoid gimbal lock
-                    objRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, objRotationX));
                 } else {
-                    // Rotate camera around object
+                    // Camera rotation - natural orbit (drag right rotates view right)
                     camRotationY += deltaX * rotSpeed;
                     camRotationX += deltaY * rotSpeed;
-                    // Clamp camera rotation
+                }
+                // Clamp rotation X to avoid gimbal lock
+                if (controlMode === 'object') {
+                    objRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, objRotationX));
+                } else {
                     camRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, camRotationX));
                 }
             }
