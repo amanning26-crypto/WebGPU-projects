@@ -152,21 +152,25 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
         indexBuffer = objData.indexBuffer;
         indexSize = objData.indexSize;
 
-        // Initialize matrices
-        updateViewMatrix();
-
-        projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(),
-            1.4, 640.0 / 480.0, 0.1, 1000.0);
-
-        // Create uniform buffers
+        // Create uniform buffers FIRST
         modelViewMatrixUniformBuffer = createGPUBuffer(device, modelViewMatrix, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         normalMatrixUniformBuffer = createGPUBuffer(device, normalMatrix, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         projectionMatrixUniformBuffer = createGPUBuffer(device, projectionMatrix, GPUBufferUsage.UNIFORM);
         
         let lightDirectionBuffer = new Float32Array([lightPosition[0], lightPosition[1], lightPosition[2]]);
-        lightDirectionUniformBuffer = createGPUBuffer(device, lightDirectionBuffer, GPUBufferUsage.UNIFORM);
+        lightDirectionUniformBuffer = createGPUBuffer(device, lightDirectionBuffer, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         
         viewDirectionUniformBuffer = createGPUBuffer(device, new Float32Array([0, 0, 1]), GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+        
+        // THEN initialize matrices
+        projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(),
+            1.4, 640.0 / 480.0, 0.1, 1000.0);
+        
+        // Update projection buffer
+        device.queue.writeBuffer(projectionMatrixUniformBuffer, 0, projectionMatrix);
+        
+        // NOW update view matrix (buffers exist)
+        updateViewMatrix();
         
         let uniformBindGroupLayout = device.createBindGroupLayout({
             entries: [
@@ -268,6 +272,11 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
     }
 
     function updateViewMatrix() {
+        // Safety check - make sure buffers exist
+        if (!viewDirectionUniformBuffer || !lightDirectionUniformBuffer) {
+            return;
+        }
+
         if (controlMode === 'object') {
             // Object transformation
             // Model matrix: translate * rotate * scale
@@ -288,7 +297,7 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
             
             // Update view direction for lighting (from camera to origin in view space)
             let viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
-                glMatrix.vec3.fromValues(0, 0, -camDistance));
+                glMatrix.vec3.fromValues(0, 0, -1));
             device.queue.writeBuffer(viewDirectionUniformBuffer, 0, viewDir);
             
         } else {
@@ -324,6 +333,8 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) 
         glMatrix.vec4.transformMat4(lightPosView, lightPos, viewMatrix);
         let lightDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
             glMatrix.vec3.fromValues(lightPosView[0], lightPosView[1], lightPosView[2]));
+        
+        // Write to light direction buffer
         device.queue.writeBuffer(lightDirectionUniformBuffer, 0, lightDir);
     }
 
