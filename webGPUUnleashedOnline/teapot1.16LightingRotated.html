@@ -75,14 +75,12 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
     let modelViewMatrixUniformBuffer, normalMatrixUniformBuffer, projectionMatrixUniformBuffer;
     let lightDirectionUniformBuffer, viewDirectionUniformBuffer, uniformBindGroup;
     let depthTexture, depthTextureView;
-    let commandEncoder, passEncoder;
     
     // Camera control variables
     let rotationX = 0;
     let rotationY = 0;
     let zoom = 3;
     let isDragging = false;
-    let isRightDragging = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
     
@@ -258,36 +256,26 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
     function setupMouseControls() {
         canvas.addEventListener('mousedown', (e) => {
             e.preventDefault();
-            if (e.button === 0) { // Left button
+            if (e.button === 0) { // Left button only
                 isDragging = true;
-                isRightDragging = false;
-            } else if (e.button === 2) { // Right button
-                isRightDragging = true;
-                isDragging = false;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
             }
-            lastMouseX = e.clientX;
-            lastMouseY = e.clientY;
         });
 
         canvas.addEventListener('mousemove', (e) => {
             e.preventDefault();
-            if (!isDragging && !isRightDragging) return;
+            if (!isDragging) return;
 
             const deltaX = e.clientX - lastMouseX;
             const deltaY = e.clientY - lastMouseY;
 
-            if (isDragging) {
-                // Left drag: rotate around X and Y axes
-                rotationY += deltaX * 0.01;
-                rotationX += deltaY * 0.01;
-                
-                // Clamp rotation X to avoid gimbal lock
-                rotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotationX));
-            } else if (isRightDragging) {
-                // Right drag: rotate around Z axis (roll)
-                rotationY += deltaX * 0.01;
-                rotationX += deltaY * 0.01;
-            }
+            // Left drag: rotate around X and Y axes
+            rotationY += deltaX * 0.01;
+            rotationX += deltaY * 0.01;
+            
+            // Clamp rotation X to avoid gimbal lock
+            rotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotationX));
 
             lastMouseX = e.clientX;
             lastMouseY = e.clientY;
@@ -298,8 +286,9 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
         canvas.addEventListener('mouseup', (e) => {
             e.preventDefault();
-            isDragging = false;
-            isRightDragging = false;
+            if (e.button === 0) { // Left button only
+                isDragging = false;
+            }
         });
 
         canvas.addEventListener('wheel', (e) => {
@@ -317,7 +306,6 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
         // Handle mouse leaving the canvas
         canvas.addEventListener('mouseleave', () => {
             isDragging = false;
-            isRightDragging = false;
         });
     }
 
