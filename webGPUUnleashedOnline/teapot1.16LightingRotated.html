@@ -80,7 +80,10 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
     let rotationX = 0;
     let rotationY = 0;
     let zoom = 3;
-    let isDragging = false;
+    let translationX = 0;
+    let translationY = 0;
+    let isLeftDragging = false;
+    let isRightDragging = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
     
@@ -88,6 +91,7 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
     let modelViewMatrix = glMatrix.mat4.create();
     let rotationMatrix = glMatrix.mat4.create();
     let translationMatrix = glMatrix.mat4.create();
+    let panMatrix = glMatrix.mat4.create();
     let normalMatrix = glMatrix.mat4.create();
     let projectionMatrix = glMatrix.mat4.create();
 
@@ -241,12 +245,18 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
         glMatrix.mat4.rotateX(rotationMatrix, rotationMatrix, rotationX);
         glMatrix.mat4.rotateY(rotationMatrix, rotationMatrix, rotationY);
         
+        // Create pan matrix for translation
+        glMatrix.mat4.identity(panMatrix);
+        glMatrix.mat4.translate(panMatrix, panMatrix, [translationX, translationY, 0]);
+        
         // Create translation matrix for zoom
         glMatrix.mat4.identity(translationMatrix);
         glMatrix.mat4.translate(translationMatrix, translationMatrix, [0, 0, -zoom]);
         
-        // Combine: modelView = translation * rotation
+        // Combine: modelView = translation * rotation * pan
+        // Order matters: pan first (local translation), then rotation, then zoom translation
         glMatrix.mat4.multiply(modelViewMatrix, translationMatrix, rotationMatrix);
+        glMatrix.mat4.multiply(modelViewMatrix, modelViewMatrix, panMatrix);
         
         // Update normal matrix
         let modelViewMatrixInverse = glMatrix.mat4.invert(glMatrix.mat4.create(), modelViewMatrix);
@@ -256,8 +266,14 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
     function setupMouseControls() {
         canvas.addEventListener('mousedown', (e) => {
             e.preventDefault();
-            if (e.button === 0) { // Left button only
-                isDragging = true;
+            if (e.button === 0) { // Left button - translate
+                isLeftDragging = true;
+                isRightDragging = false;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            } else if (e.button === 2) { // Right button - rotate
+                isRightDragging = true;
+                isLeftDragging = false;
                 lastMouseX = e.clientX;
                 lastMouseY = e.clientY;
             }
@@ -265,17 +281,25 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
         canvas.addEventListener('mousemove', (e) => {
             e.preventDefault();
-            if (!isDragging) return;
+            if (!isLeftDragging && !isRightDragging) return;
 
             const deltaX = e.clientX - lastMouseX;
             const deltaY = e.clientY - lastMouseY;
 
-            // Left drag: rotate around X and Y axes
-            rotationY += deltaX * 0.01;
-            rotationX += deltaY * 0.01;
-            
-            // Clamp rotation X to avoid gimbal lock
-            rotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotationX));
+            if (isLeftDragging) {
+                // Left drag: translate (pan) the object
+                // Scale factor to make pan speed reasonable
+                const panSpeed = 0.01;
+                translationX += deltaX * panSpeed;
+                translationY -= deltaY * panSpeed; // Invert Y for natural feel
+            } else if (isRightDragging) {
+                // Right drag: rotate around X and Y axes
+                rotationY += deltaX * 0.01;
+                rotationX += deltaY * 0.01;
+                
+                // Clamp rotation X to avoid gimbal lock
+                rotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, rotationX));
+            }
 
             lastMouseX = e.clientX;
             lastMouseY = e.clientY;
@@ -286,8 +310,10 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
         canvas.addEventListener('mouseup', (e) => {
             e.preventDefault();
-            if (e.button === 0) { // Left button only
-                isDragging = false;
+            if (e.button === 0) { // Left button
+                isLeftDragging = false;
+            } else if (e.button === 2) { // Right button
+                isRightDragging = false;
             }
         });
 
@@ -305,7 +331,8 @@ fn fs_main(in: VertexOutput,  @builtin(front_facing) face: bool) -> @location(0)
 
         // Handle mouse leaving the canvas
         canvas.addEventListener('mouseleave', () => {
-            isDragging = false;
+            isLeftDragging = false;
+            isRightDragging = false;
         });
     }
 
