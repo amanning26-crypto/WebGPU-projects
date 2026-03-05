@@ -1,0 +1,520 @@
+<html>
+
+<body>
+    <canvas id="canvas" width="640" height="480"></canvas>
+    <div style="position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: white; padding: 10px; border-radius: 5px; font-family: Arial, sans-serif;">
+        <label>
+            <input type="radio" name="controlMode" value="object" checked> Move/Rotate Object
+        </label>
+        <br>
+        <label>
+            <input type="radio" name="controlMode" value="camera"> Move/Rotate Camera
+        </label>
+        <br>
+        <small style="color: #ccc;">
+            Left drag: Translate<br>
+            Right drag: Rotate<br>
+            Wheel: Scale/Zoom
+        </small>
+    </div>
+</body>
+<script src="../utils/gl-matrix.js"></script>
+<script src="../utils/OBJFile.js"></script>
+<script src="../utils/utils.js"></script>
+<script id="shader" type="wgsl">
+// Vertex shader
+
+@group(0) @binding(0)
+var<uniform> modelView: mat4x4<f32>;
+@group(0) @binding(1)
+var<uniform> projection: mat4x4<f32>;
+@group(0) @binding(2)
+var<uniform> normalMatrix: mat4x4<f32>;
+@group(0) @binding(3)
+var<uniform> lightDirection: vec3<f32>;
+@group(0) @binding(4)
+var<uniform> viewDirection: vec3<f32>;
+
+// Silver material properties
+const ambientColor: vec4<f32> = vec4<f32>(0.1, 0.1, 0.1, 1.0);
+const diffuseColor: vec4<f32> = vec4<f32>(0.65, 0.65, 0.7, 1.0);
+const specularColor: vec4<f32> = vec4<f32>(0.95, 0.95, 1.0, 1.0);
+
+const shininess: f32 = 90.0;
+const diffuseConstant: f32 = 0.7;
+const specularConstant: f32 = 1.5;
+const ambientConstant: f32 = 0.2;
+
+fn specular(lightDir: vec3<f32>, viewDir: vec3<f32>, normal: vec3<f32>, specularColor: vec3<f32>, shininess: f32) -> vec3<f32> {
+    var reflectDir: vec3<f32> = reflect(-lightDir, normal);
+    var specDot: f32 = max(dot(reflectDir, viewDir), 0.0);
+    return pow(specDot, shininess) * specularColor;
+}
+
+fn diffuse(lightDir: vec3<f32>, normal: vec3<f32>, diffuseColor: vec3<f32>) -> vec3<f32> {
+    return max(dot(lightDir, normal), 0.0) * diffuseColor;
+}
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec3<f32>
+};
+
+@vertex
+fn vs_main(
+    @location(0) inPos: vec3<f32>,
+    @location(1) inNormal: vec3<f32>
+) -> VertexOutput {
+
+    var n: vec3<f32> = normalize((normalMatrix * vec4<f32>(inNormal, 0.0)).xyz);
+    var viewDir: vec3<f32> = normalize((normalMatrix * vec4<f32>(-viewDirection, 0.0)).xyz);
+    var lightDir: vec3<f32> = normalize((normalMatrix * vec4<f32>(-lightDirection, 0.0)).xyz);
+
+    var radiance: vec3<f32> = ambientColor.rgb * ambientConstant + 
+        diffuse(lightDir, n, diffuseColor.rgb) * diffuseConstant +
+        specular(lightDir, viewDir, n, specularColor.rgb, shininess) * specularConstant;
+  
+    var out: VertexOutput;
+    out.clip_position = projection * modelView * vec4<f32>(inPos, 1.0);
+    out.color = radiance;
+    return out;
+}
+
+// Fragment shader
+@fragment
+fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 1.0);
+}
+</script>
+
+<script>
+    // Global variables for interaction
+    let canvas, device, context, pipeline;
+    let positionBuffer, normalBuffer, indexBuffer, indexSize;
+    let modelViewMatrixUniformBuffer, normalMatrixUniformBuffer, projectionMatrixUniformBuffer;
+    let lightDirectionUniformBuffer, viewDirectionUniformBuffer, uniformBindGroup;
+    let depthTexture, depthTextureView;
+    
+    // Control mode
+    let controlMode = 'object'; // 'object' or 'camera'
+    
+    // Object transformation variables
+    let objRotationX = 0;
+    let objRotationY = 0;
+    let objTranslationX = 0;
+    let objTranslationY = 0;
+    let objTranslationZ = 0;
+    let objScale = 1.0;
+    
+    // Camera transformation variables
+    let camRotationX = 0;
+    let camRotationY = 0;
+    let camDistance = 5.0;
+    
+    // Mouse state
+    let isLeftDragging = false;
+    let isRightDragging = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+    
+    // Matrices
+    let modelMatrix = glMatrix.mat4.create();
+    let viewMatrix = glMatrix.mat4.create();
+    let modelViewMatrix = glMatrix.mat4.create();
+    let normalMatrix = glMatrix.mat4.create();
+    let projectionMatrix = glMatrix.mat4.create();
+    
+    // Light position (fixed in world space)
+    const lightPosition = glMatrix.vec3.fromValues(2.0, 3.0, 4.0);
+
+    // Helper function to create a uniform buffer with COPY_DST usage
+    function createUniformBuffer(device, initialData, size) {
+        const buffer = device.createBuffer({
+            size: size,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        if (initialData) {
+            device.queue.writeBuffer(buffer, 0, initialData);
+        }
+        return buffer;
+    }
+
+    //model loading / phong / per vertex
+    async function webgpu() {
+        if (!navigator.gpu) {
+            showWarning("WebGPU support is not available. A WebGPU capable browser is required to run this sample.");
+            throw new Error("WebGPU support is not available");
+        }
+        
+        canvas = document.getElementById('canvas');
+        const adapter = await navigator.gpu.requestAdapter();
+        console.log(adapter);
+
+        device = await adapter.requestDevice();
+        console.log(device);
+
+        context = configContext(device, canvas);
+
+        let shaderModule = shaderModuleFromCode(device, 'shader');
+
+        let objData = await loadObj(device, '../data/teapot.obj');
+        positionBuffer = objData.positionBuffer;
+        normalBuffer = objData.normalBuffer;
+        indexBuffer = objData.indexBuffer;
+        indexSize = objData.indexSize;
+
+        // Initialize projection matrix
+        projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(),
+            1.4, 640.0 / 480.0, 0.1, 1000.0);
+
+        // Create uniform buffers with proper usage flags
+        modelViewMatrixUniformBuffer = createUniformBuffer(device, modelViewMatrix, 64);
+        normalMatrixUniformBuffer = createUniformBuffer(device, normalMatrix, 64);
+        projectionMatrixUniformBuffer = createUniformBuffer(device, projectionMatrix, 64);
+        
+        // Light direction is 3 floats = 12 bytes (pad to 16 for alignment)
+        let lightDirArray = new Float32Array([lightPosition[0], lightPosition[1], lightPosition[2], 0]);
+        lightDirectionUniformBuffer = createUniformBuffer(device, lightDirArray, 16);
+        
+        // View direction is 3 floats = 12 bytes (pad to 16)
+        let viewDirArray = new Float32Array([0, 0, 1, 0]);
+        viewDirectionUniformBuffer = createUniformBuffer(device, viewDirArray, 16);
+        
+        // Initialize view matrices and update all buffers
+        updateViewMatrix();
+        
+        let uniformBindGroupLayout = device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+                { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+                { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+                { binding: 3, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+                { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }
+            ]
+        });
+
+        uniformBindGroup = device.createBindGroup({
+            layout: uniformBindGroupLayout,
+            entries: [
+                { binding: 0, resource: { buffer: modelViewMatrixUniformBuffer } },
+                { binding: 1, resource: { buffer: projectionMatrixUniformBuffer } },
+                { binding: 2, resource: { buffer: normalMatrixUniformBuffer } },
+                { binding: 3, resource: { buffer: lightDirectionUniformBuffer } },
+                { binding: 4, resource: { buffer: viewDirectionUniformBuffer } }
+            ]
+        });
+
+        const positionAttribDesc = {
+            shaderLocation: 0,
+            offset: 0,
+            format: 'float32x3'
+        };
+
+        const positionBufferLayoutDesc = {
+            attributes: [positionAttribDesc],
+            arrayStride: 4 * 3,
+            stepMode: 'vertex'
+        };
+
+        const normalAttribDesc = {
+            shaderLocation: 1,
+            offset: 0,
+            format: 'float32x3'
+        };
+
+        const normalBufferLayoutDesc = {
+            attributes: [normalAttribDesc],
+            arrayStride: 4 * 3,
+            stepMode: 'vertex'
+        };
+
+        const pipelineLayoutDesc = { bindGroupLayouts: [uniformBindGroupLayout] };
+        const layout = device.createPipelineLayout(pipelineLayoutDesc);
+
+        const colorState = {
+            format: 'bgra8unorm'
+        };
+
+        const pipelineDesc = {
+            layout,
+            vertex: {
+                module: shaderModule,
+                entryPoint: 'vs_main',
+                buffers: [positionBufferLayoutDesc, normalBufferLayoutDesc]
+            },
+            fragment: {
+                module: shaderModule,
+                entryPoint: 'fs_main',
+                targets: [colorState]
+            },
+            primitive: {
+                topology: 'triangle-list',
+                frontFace: 'ccw',
+                cullMode: 'none'
+            },
+            depthStencil: {
+                depthWriteEnabled: true,
+                depthCompare: 'less',
+                format: 'depth24plus-stencil8'
+            }
+        };
+
+        pipeline = device.createRenderPipeline(pipelineDesc);
+
+        // Create Depth Backing
+        const depthTextureDesc = {
+            size: [canvas.width, canvas.height, 1],
+            dimension: '2d',
+            format: 'depth24plus-stencil8',
+            usage: GPUTextureUsage.RENDER_ATTACHMENT
+        };
+
+        depthTexture = device.createTexture(depthTextureDesc);
+        depthTextureView = depthTexture.createView();
+
+        // Setup UI controls
+        setupUIControls();
+        
+        // Setup mouse event listeners
+        setupMouseControls();
+        
+        // Initial render
+        render();
+    }
+
+    function updateViewMatrix() {
+        // Safety check - make sure buffers exist
+        if (!viewDirectionUniformBuffer || !lightDirectionUniformBuffer || !modelViewMatrixUniformBuffer) {
+            return;
+        }
+
+        if (controlMode === 'object') {
+            // OBJECT MODE: Object rotates around its own center
+            // Transformation order: Scale -> Rotate -> Translate
+            glMatrix.mat4.identity(modelMatrix);
+            
+            // Scale first
+            glMatrix.mat4.scale(modelMatrix, modelMatrix, [objScale, objScale, objScale]);
+            
+            // Rotate second (around object's center)
+            // Note: Positive rotation follows right-hand rule
+            glMatrix.mat4.rotateX(modelMatrix, modelMatrix, objRotationX);
+            glMatrix.mat4.rotateY(modelMatrix, modelMatrix, objRotationY);
+            
+            // Translate last
+            glMatrix.mat4.translate(modelMatrix, modelMatrix, [objTranslationX, objTranslationY, objTranslationZ]);
+            
+            // View matrix: fixed camera
+            glMatrix.mat4.lookAt(viewMatrix, 
+                glMatrix.vec3.fromValues(0, 0, camDistance), 
+                glMatrix.vec3.fromValues(0, 0, 0), 
+                glMatrix.vec3.fromValues(0, 1, 0));
+            
+        } else {
+            // CAMERA MODE: Camera orbits around the object
+            glMatrix.mat4.identity(modelMatrix); // Object at origin
+            
+            // View matrix: camera orbits around target
+            glMatrix.mat4.identity(viewMatrix);
+            
+            // For orbit camera: translate then rotate (inverse of camera movement)
+            // This creates natural camera motion where dragging right rotates view right
+            glMatrix.mat4.translate(viewMatrix, viewMatrix, [0, 0, -camDistance]);
+            glMatrix.mat4.rotateY(viewMatrix, viewMatrix, -camRotationY);
+            glMatrix.mat4.rotateX(viewMatrix, viewMatrix, -camRotationX);
+        }
+        
+        // ModelView matrix
+        glMatrix.mat4.multiply(modelViewMatrix, viewMatrix, modelMatrix);
+        
+        // Update view direction for lighting
+        let viewDir;
+        if (controlMode === 'object') {
+            viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+                glMatrix.vec3.fromValues(0, 0, -1));
+        } else {
+            // In camera mode, view direction is from camera to origin
+            let cameraPos = glMatrix.vec3.fromValues(0, 0, camDistance);
+            glMatrix.vec3.transformMat4(cameraPos, cameraPos, viewMatrix);
+            viewDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+                glMatrix.vec3.fromValues(-cameraPos[0], -cameraPos[1], -cameraPos[2]));
+        }
+        let viewDirArray = new Float32Array([viewDir[0], viewDir[1], viewDir[2], 0]);
+        device.queue.writeBuffer(viewDirectionUniformBuffer, 0, viewDirArray);
+        
+        // Update normal matrix
+        let modelViewMatrixInverse = glMatrix.mat4.invert(glMatrix.mat4.create(), modelViewMatrix);
+        glMatrix.mat4.transpose(normalMatrix, modelViewMatrixInverse);
+        
+        // Write matrices to buffers
+        device.queue.writeBuffer(modelViewMatrixUniformBuffer, 0, modelViewMatrix);
+        device.queue.writeBuffer(normalMatrixUniformBuffer, 0, normalMatrix);
+        
+        // Update light direction (transform light position to view space)
+        let lightPos = glMatrix.vec4.fromValues(lightPosition[0], lightPosition[1], lightPosition[2], 1.0);
+        let lightPosView = glMatrix.vec4.create();
+        glMatrix.vec4.transformMat4(lightPosView, lightPos, viewMatrix);
+        let lightDir = glMatrix.vec3.normalize(glMatrix.vec3.create(), 
+            glMatrix.vec3.fromValues(lightPosView[0], lightPosView[1], lightPosView[2]));
+        
+        // Write to light direction buffer
+        let lightDirArray = new Float32Array([lightDir[0], lightDir[1], lightDir[2], 0]);
+        device.queue.writeBuffer(lightDirectionUniformBuffer, 0, lightDirArray);
+    }
+
+    function setupUIControls() {
+        const radios = document.getElementsByName('controlMode');
+        radios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                controlMode = e.target.value;
+                updateViewMatrix();
+                render();
+            });
+        });
+    }
+
+    function setupMouseControls() {
+        canvas.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            if (e.button === 0) { // Left button - translate
+                isLeftDragging = true;
+                isRightDragging = false;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            } else if (e.button === 2) { // Right button - rotate
+                isRightDragging = true;
+                isLeftDragging = false;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            e.preventDefault();
+            if (!isLeftDragging && !isRightDragging) return;
+
+            const deltaX = e.clientX - lastMouseX;
+            const deltaY = e.clientY - lastMouseY;
+            const panSpeed = 0.01;
+            const rotSpeed = 0.01;
+
+            if (isLeftDragging) {
+                // Left drag: translate
+                if (controlMode === 'object') {
+                    objTranslationX += deltaX * panSpeed;
+                    objTranslationY -= deltaY * panSpeed;
+                } else {
+                    // Camera pan - move in screen space
+                    // This is more complex for orbit camera, so we'll keep it simple
+                    // For now, just adjust distance
+                }
+            } else if (isRightDragging) {
+                // Right drag: rotate
+                if (controlMode === 'object') {
+                    // Object rotation - natural direction (drag right rotates right)
+                    objRotationY += deltaX * rotSpeed;
+                    objRotationX += deltaY * rotSpeed;
+                } else {
+                    // Camera rotation - natural orbit (drag right rotates view right)
+                    camRotationY += deltaX * rotSpeed;
+                    camRotationX += deltaY * rotSpeed;
+                }
+                // Clamp rotation X to avoid gimbal lock
+                if (controlMode === 'object') {
+                    objRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, objRotationX));
+                } else {
+                    camRotationX = Math.max(-Math.PI/2, Math.min(Math.PI/2, camRotationX));
+                }
+            }
+
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+
+            updateViewMatrix();
+            render();
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            e.preventDefault();
+            if (e.button === 0) {
+                isLeftDragging = false;
+            } else if (e.button === 2) {
+                isRightDragging = false;
+            }
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const scaleSpeed = 0.001;
+            const zoomSpeed = 0.1;
+            
+            if (controlMode === 'object') {
+                objScale += e.deltaY * scaleSpeed;
+                objScale = Math.max(0.1, Math.min(5.0, objScale));
+            } else {
+                camDistance += e.deltaY * zoomSpeed;
+                camDistance = Math.max(1.0, Math.min(20.0, camDistance));
+            }
+            
+            updateViewMatrix();
+            render();
+        });
+
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            isLeftDragging = false;
+            isRightDragging = false;
+        });
+    }
+
+    function render() {
+        if (!device || !pipeline || !modelViewMatrixUniformBuffer) return;
+
+        // Get current texture and create views
+        let colorTexture = context.getCurrentTexture();
+        let colorTextureView = colorTexture.createView();
+
+        let colorAttachment = {
+            view: colorTextureView,
+            clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store'
+        };
+
+        const depthAttachment = {
+            view: depthTextureView,
+            depthClearValue: 1,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+            stencilClearValue: 0,
+            stencilLoadOp: 'clear',
+            stencilStoreOp: 'store'
+        };
+
+        const renderPassDesc = {
+            colorAttachments: [colorAttachment],
+            depthStencilAttachment: depthAttachment
+        };
+
+        let commandEncoder = device.createCommandEncoder();
+        let passEncoder = commandEncoder.beginRenderPass(renderPassDesc);
+        
+        passEncoder.setViewport(0, 0, canvas.width, canvas.height, 0, 1);
+        passEncoder.setPipeline(pipeline);
+        passEncoder.setBindGroup(0, uniformBindGroup);
+        passEncoder.setVertexBuffer(0, positionBuffer);
+        passEncoder.setVertexBuffer(1, normalBuffer);
+        passEncoder.setIndexBuffer(indexBuffer, 'uint16');
+        passEncoder.drawIndexed(indexSize);
+        passEncoder.end();
+
+        device.queue.submit([commandEncoder.finish()]);
+    }
+
+    webgpu();
+</script>
+
+</html>
