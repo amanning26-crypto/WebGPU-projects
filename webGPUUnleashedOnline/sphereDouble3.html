@@ -219,9 +219,9 @@ for(let i=0;i<SPHERE_COUNT;i++){
   y:(Math.random()-0.5)*BOUNDS,
   z:-4-Math.random()*6,
 
-  vx:(Math.random()-0.5)*0.05,
-  vy:(Math.random()-0.5)*0.05,
-  vz:(Math.random()-0.5)*0.05,
+  vx:(Math.random()-0.5)*0.6,
+  vy:(Math.random()-0.5)*0.6,
+  vz:(Math.random()-0.5)*0.6,
 
   size:0.3+Math.random()*0.8,
 
@@ -232,11 +232,11 @@ for(let i=0;i<SPHERE_COUNT;i++){
 
 }
 
-const instanceData = new Float32Array(SPHERE_COUNT*8);
+const instanceData = new Float32Array(SPHERE_COUNT * 8);
 
 const instanceBuffer = device.createBuffer({
- size:instanceData.byteLength,
- usage:GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+  size: instanceData.byteLength,
+  usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
 });
 
 
@@ -251,9 +251,14 @@ for(let i=0;i<SPHERE_COUNT;i++){
  s.y+=s.vy;
  s.z+=s.vz;
 
- if(s.x>BOUNDS||s.x<-BOUNDS) s.vx*=-1;
- if(s.y>BOUNDS||s.y<-BOUNDS) s.vy*=-1;
- if(s.z>-1||s.z<-12) s.vz*=-1;
+if(s.x>BOUNDS){ s.x=BOUNDS; s.vx*=-1; }
+if(s.x<-BOUNDS){ s.x=-BOUNDS; s.vx*=-1; }
+
+if(s.y>BOUNDS){ s.y=BOUNDS; s.vy*=-1; }
+if(s.y<-BOUNDS){ s.y=-BOUNDS; s.vy*=-1; }
+
+if(s.z>-1){ s.z=-1; s.vz*=-1; }
+if(s.z<-12){ s.z=-12; s.vz*=-1; }
 
  const o=i*8;
 
