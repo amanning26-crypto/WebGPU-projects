@@ -207,6 +207,38 @@ depthStencil:{
 
 });
 
+const SPHERE_COUNT = 10;
+
+const instanceData = new Float32Array(SPHERE_COUNT * 8);
+// x y z size r g b pad
+
+for(let i=0;i<SPHERE_COUNT;i++){
+
+ const o=i*8;
+
+ instanceData[o+0]=(Math.random()-0.5)*12; // wider spread
+ instanceData[o+1]=(Math.random()-0.5)*8;
+ instanceData[o+2]=-4-Math.random()*10;
+
+ instanceData[o+3]=0.3+Math.random()*1.0;
+
+ instanceData[o+4]=Math.random();
+ instanceData[o+5]=Math.random();
+ instanceData[o+6]=Math.random();
+ instanceData[o+7]=0;
+}
+
+const instanceBuffer=device.createBuffer({
+ size:instanceData.byteLength,
+ usage:GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+ mappedAtCreation:true
+});
+
+new Float32Array(instanceBuffer.getMappedRange()).set(instanceData);
+instanceBuffer.unmap();
+
+
+
 function frame(){
 
 const encoder=device.createCommandEncoder();
@@ -229,39 +261,12 @@ depthStencilAttachment:{
 
 });
 
-
-const SPHERE_COUNT = 10;
-
-const instanceData = new Float32Array(SPHERE_COUNT * 8);
-// x y z size r g b pad
-
-for(let i=0;i<SPHERE_COUNT;i++){
-
- const o=i*8;
-
- instanceData[o+0]=(Math.random()-0.5)*6;  // x
- instanceData[o+1]=(Math.random()-0.5)*4;  // y
- instanceData[o+2]=-3-Math.random()*4;     // z
- instanceData[o+3]=0.3+Math.random()*0.8;  // size
-
- instanceData[o+4]=Math.random();
- instanceData[o+5]=Math.random();
- instanceData[o+6]=Math.random();
- instanceData[o+7]=0;
-}
-
-const instanceBuffer=device.createBuffer({
- size:instanceData.byteLength,
- usage:GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-});
-
-device.queue.writeBuffer(instanceBuffer,0,instanceData);
-
 pass.setPipeline(pipeline);
 
 pass.setVertexBuffer(0,posBuf);
 pass.setVertexBuffer(1,normBuf);
 pass.setVertexBuffer(2,instanceBuffer);
+
 pass.setIndexBuffer(indBuf,"uint32");
 
 pass.drawIndexed(sphere.ind.length, SPHERE_COUNT);
