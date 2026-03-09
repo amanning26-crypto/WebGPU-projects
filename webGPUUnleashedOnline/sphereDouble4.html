@@ -77,8 +77,8 @@ async function init() {
   const indBuf = buffer(sphere.ind, GPUBufferUsage.INDEX);
 
   // --- Shader ---
-  const shader = device.createShaderModule({
-    code: `
+ const shader = device.createShaderModule({
+  code: `
 struct VSOut {
   @builtin(position) pos: vec4f,
   @location(0) normal: vec3f,
@@ -114,8 +114,9 @@ fn fs(in: VSOut) -> @location(0) vec4f {
   let spec = pow(max(dot(view, reflectDir), 0.0), 32.0);
   let color = in.color * diff + spec;
   return vec4f(color + 0.05, 1.0);
-}`
-  });
+}
+`
+});
 
   // --- Pipeline ---
   const bindGroupLayout = device.createBindGroupLayout({
