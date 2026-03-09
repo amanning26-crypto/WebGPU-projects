@@ -1,227 +1,359 @@
+<!DOCTYPE html>
 <html>
+<head>
+<meta charset="utf-8">
+<title>WebGPU Spheres with Bounding Cube</title>
+<style>
+body { margin:0; background:#777; }
+canvas { width:100vw; height:100vh; display:block; }
+</style>
+</head>
 <body>
-    <canvas id="canvas" width="640" height="480"></canvas>
-</body>
+<canvas id="c"></canvas>
+<script type="module">
 
-<script src="../utils/utils.js"></script>
-<script src="../utils/gl-matrix.js"></script>
+const canvas = document.querySelector("#c");
 
-<script id="shader" type="wgsl">
-// (your WGSL unchanged)
-@group(0) @binding(0) var<uniform> transform: mat4x4<f32>;
-@group(0) @binding(1) var<uniform> projection: mat4x4<f32>;
+async function init(){
+  if(!navigator.gpu){
+    document.body.innerHTML="WebGPU not supported";
+    return;
+  }
 
-struct VertexOutput { @builtin(position) clip_position: vec4<f32> };
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();
+  const context = canvas.getContext("webgpu");
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  context.configure({ device, format, alphaMode:"opaque" });
+
+  const depthTexture = device.createTexture({
+    size:[canvas.width,canvas.height],
+    format:"depth24plus",
+    usage:GPUTextureUsage.RENDER_ATTACHMENT
+  });
+
+  // --- Sphere mesh ---
+  function createSphere(r,lat,lon){
+    let p=[],n=[],i=[];
+    for(let y=0;y<=lat;y++){
+      let v=y/lat;
+      let th=v*Math.PI;
+      for(let x=0;x<=lon;x++){
+        let u=x/lon;
+        let ph=u*Math.PI*2;
+        let sx=Math.sin(th)*Math.cos(ph);
+        let sy=Math.cos(th);
+        let sz=Math.sin(th)*Math.sin(ph);
+        p.push(r*sx,r*sy,r*sz);
+        n.push(sx,sy,sz);
+      }
+    }
+    for(let y=0;y<lat;y++){
+      for(let x=0;x<lon;x++){
+        let a=y*(lon+1)+x;
+        let b=a+lon+1;
+        i.push(a,b,a+1);
+        i.push(b,b+1,a+1);
+      }
+    }
+    return { pos:new Float32Array(p), norm:new Float32Array(n), ind:new Uint32Array(i) };
+  }
+
+  const sphere = createSphere(0.7,32,32);
+
+  function buffer(data,usage){
+    const b = device.createBuffer({
+      size:data.byteLength,
+      usage,
+      mappedAtCreation:true
+    });
+    new data.constructor(b.getMappedRange()).set(data);
+    b.unmap();
+    return b;
+  }
+
+  const posBuf = buffer(sphere.pos,GPUBufferUsage.VERTEX);
+  const normBuf = buffer(sphere.norm,GPUBufferUsage.VERTEX);
+  const indBuf = buffer(sphere.ind,GPUBufferUsage.INDEX);
+
+  // --- Shader ---
+  const shader = device.createShaderModule({
+    code:`
+struct VSOut{
+  @builtin(position) pos:vec4f,
+  @location(0) normal:vec3f,
+  @location(1) color:vec3f,
+  @location(2) world:vec3f
+};
+
+@group(0) @binding(0) var<uniform> viewProj : mat4x4<f32>;
 
 @vertex
-fn vs_main(@location(0) inPos: vec3<f32>) -> VertexOutput {
-    var out: VertexOutput;
-    out.clip_position = projection * transform * vec4<f32>(inPos, 1.0);
-    return out;
+fn vs(
+  @location(0) position:vec3f,
+  @location(1) normal:vec3f,
+  @location(2) instPos:vec3f,
+  @location(3) instSize:f32,
+  @location(4) instColor:vec3f
+)->VSOut{
+  var out:VSOut;
+  let p = position*instSize + instPos;
+  out.pos = viewProj * vec4f(p,1);
+  out.normal = normal;
+  out.color = instColor;
+  out.world = p;
+  return out;
 }
 
 @fragment
-fn fs_main(in: VertexOutput, @builtin(front_facing) face: bool) -> @location(0) vec4<f32> {
-   if (face) {
-    return vec4<f32>(0.0, 0.0, 1.0, 1.0);
-} else {
-    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+fn fs(in:VSOut)->@location(0) vec4f{
+  let light=normalize(vec3f(1,1,1));
+  let view=normalize(-in.world);
+  let diff=max(dot(in.normal,light),0);
+  let reflectDir=reflect(-light,in.normal);
+  let spec=pow(max(dot(view,reflectDir),0),32);
+  let color=in.color*diff + spec;
+  return vec4f(color+0.05,1);
+}
+`
+  });
+
+  // --- Cube shader (simple color, lines) ---
+  const lineShader = device.createShaderModule({
+    code:`
+struct VSOut{ @builtin(position) pos:vec4f; @location(0) color:vec3f; };
+@group(0) @binding(0) var<uniform> viewProj : mat4x4<f32>;
+
+@vertex
+fn vs(@location(0) position:vec3f)->VSOut{
+  var out:VSOut;
+  out.pos = viewProj * vec4f(position,1);
+  out.color = vec3f(0.2,0.2,0.2);
+  return out;
 }
 
+@fragment
+fn fs(in:VSOut)->@location(0) vec4f{
+  return vec4f(in.color,1);
 }
-</script>
+`
+  });
 
-<script>
-async function webgpu() {
+  // --- Pipelines ---
+  const bindGroupLayout = device.createBindGroupLayout({
+    entries:[{binding:0, visibility:GPUShaderStage.VERTEX, buffer:{type:"uniform"}}]
+  });
 
-    // ⭐ ADDED: rotation state
-    let angleX = 0;
-    let angleY = 0;
+  const spherePipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+    vertex:{
+      module:shader, entryPoint:"vs",
+      buffers:[
+        {arrayStride:12, attributes:[{shaderLocation:0,offset:0,format:"float32x3"}]},
+        {arrayStride:12, attributes:[{shaderLocation:1,offset:0,format:"float32x3"}]},
+        {arrayStride:32, stepMode:"instance", attributes:[
+          {shaderLocation:2,offset:0,format:"float32x3"},
+          {shaderLocation:3,offset:12,format:"float32"},
+          {shaderLocation:4,offset:16,format:"float32x3"}
+        ]}
+      ]
+    },
+    fragment:{ module:shader, entryPoint:"fs", targets:[{format}] },
+    primitive:{ topology:"triangle-list", cullMode:"back" },
+    depthStencil:{ format:"depth24plus", depthWriteEnabled:true, depthCompare:"less" }
+  });
 
-    function buildTransform() {
-        let m = glMatrix.mat4.create();
+  const cubePipeline = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+    vertex:{ module:lineShader, entryPoint:"vs", buffers:[{arrayStride:12, attributes:[{shaderLocation:0,offset:0,format:"float32x3"}]}]},
+    fragment:{ module:lineShader, entryPoint:"fs", targets:[{format}] },
+    primitive:{ topology:"line-list" },
+    depthStencil:{ format:"depth24plus", depthWriteEnabled:true, depthCompare:"less" }
+  });
 
-        glMatrix.mat4.lookAt(
-            m,
-            glMatrix.vec3.fromValues(300, 300, 300),
-            glMatrix.vec3.fromValues(0, 0, 0),
-            glMatrix.vec3.fromValues(0, 0, 1)
-        );
+  const cameraBuffer = device.createBuffer({
+    size:64,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+  });
 
-        glMatrix.mat4.rotateX(m, m, angleX);
-        glMatrix.mat4.rotateY(m, m, angleY);
+  const bindGroup = device.createBindGroup({
+    layout: bindGroupLayout,
+    entries: [{binding:0, resource:{buffer:cameraBuffer}}]
+  });
 
-        return m;
+  // --- Sphere instances ---
+  const SPHERE_COUNT=10;
+  const BOUNDS=6;
+  const SPHERE_NEAR = 0.5;
+  const SPHERE_FAR = 20;
+  const spheres=[];
+  for(let i=0;i<SPHERE_COUNT;i++){
+    spheres.push({
+      x:(Math.random()-0.5)*BOUNDS,
+      y:(Math.random()-0.5)*BOUNDS,
+      z:-4-Math.random()*6,
+      vx:(Math.random()-0.5)*0.6,
+      vy:(Math.random()-0.5)*0.6,
+      vz:(Math.random()-0.5)*0.6,
+      size:0.3+Math.random()*0.8,
+      r:Math.random(),
+      g:Math.random(),
+      b:Math.random()
+    });
+  }
+
+  const instanceData = new Float32Array(SPHERE_COUNT*8);
+  const instanceBuffer = device.createBuffer({
+    size: instanceData.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
+  });
+
+  // --- Cube geometry ---
+  const cubeVerts = new Float32Array([
+    -BOUNDS,-BOUNDS,-BOUNDS,  BOUNDS,-BOUNDS,-BOUNDS,
+     BOUNDS,-BOUNDS,-BOUNDS,  BOUNDS, BOUNDS,-BOUNDS,
+     BOUNDS, BOUNDS,-BOUNDS, -BOUNDS, BOUNDS,-BOUNDS,
+    -BOUNDS, BOUNDS,-BOUNDS, -BOUNDS,-BOUNDS,-BOUNDS,
+
+    -BOUNDS,-BOUNDS, BOUNDS,  BOUNDS,-BOUNDS, BOUNDS,
+     BOUNDS,-BOUNDS, BOUNDS,  BOUNDS, BOUNDS, BOUNDS,
+     BOUNDS, BOUNDS, BOUNDS, -BOUNDS, BOUNDS, BOUNDS,
+    -BOUNDS, BOUNDS, BOUNDS, -BOUNDS,-BOUNDS, BOUNDS,
+
+    -BOUNDS,-BOUNDS,-BOUNDS, -BOUNDS,-BOUNDS, BOUNDS,
+     BOUNDS,-BOUNDS,-BOUNDS,  BOUNDS,-BOUNDS, BOUNDS,
+     BOUNDS, BOUNDS,-BOUNDS,  BOUNDS, BOUNDS, BOUNDS,
+    -BOUNDS, BOUNDS,-BOUNDS, -BOUNDS, BOUNDS, BOUNDS
+  ]);
+
+  const cubeBuffer = device.createBuffer({
+    size: cubeVerts.byteLength,
+    usage: GPUBufferUsage.VERTEX,
+    mappedAtCreation: true
+  });
+  new Float32Array(cubeBuffer.getMappedRange()).set(cubeVerts);
+  cubeBuffer.unmap();
+
+  // --- Camera orbit ---
+  let theta=0, phi=Math.PI/4, radius=15;
+  let isDragging=false, lastX=0, lastY=0;
+  canvas.addEventListener("mousedown", e=>{isDragging=true; lastX=e.clientX; lastY=e.clientY;});
+  canvas.addEventListener("mouseup", e=>{isDragging=false;});
+  canvas.addEventListener("mouseleave", e=>{isDragging=false;});
+  canvas.addEventListener("mousemove", e=>{
+    if(!isDragging) return;
+    const dx=e.clientX-lastX, dy=e.clientY-lastY;
+    lastX=e.clientX; lastY=e.clientY;
+    theta += dx*0.005;
+    phi   -= dy*0.005;
+    phi=Math.min(Math.max(0.1,phi),Math.PI-0.1);
+  });
+  canvas.addEventListener("wheel", e=>{
+    e.preventDefault();
+    radius += e.deltaY*0.02;
+    radius = Math.max(2, Math.min(30, radius));
+  });
+
+  // --- Math helpers ---
+  function lookAt(eye,target,up){
+    const z=normalize(sub(eye,target));
+    const x=normalize(cross(up,z));
+    const y=cross(z,x);
+    return [
+      x[0],y[0],z[0],0,
+      x[1],y[1],z[1],0,
+      x[2],y[2],z[2],0,
+      -dot(x,eye),-dot(y,eye),-dot(z,eye),1
+    ];
+  }
+  function sub(a,b){return [a[0]-b[0],a[1]-b[1],a[2]-b[2]];}
+  function cross(a,b){return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];}
+  function dot(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
+  function normalize(v){const l=Math.hypot(...v); return [v[0]/l,v[1]/l,v[2]/l];}
+  function perspective(fov,aspect,near,far){
+    const f = 1/Math.tan(fov/2);
+    const nf = 1/(far-near);
+    return [
+      f/aspect,0,0,0,
+      0,f,0,0,
+      0,0,far*nf,1,
+      0,0,-near*far*nf,0
+    ];
+  }
+  function multiply4(a,b){
+    const out = new Array(16).fill(0);
+    for(let i=0;i<4;i++) for(let j=0;j<4;j++) for(let k=0;k<4;k++)
+      out[i*4+j]+=a[i*4+k]*b[k*4+j];
+    return out;
+  }
+
+  // --- Render loop ---
+  function frame(){
+    for(let i=0;i<SPHERE_COUNT;i++){
+      const s=spheres[i];
+      s.x+=s.vx; s.y+=s.vy; s.z+=s.vz;
+      if(s.x>BOUNDS){ s.x=BOUNDS; s.vx*=-1; }
+      if(s.x<-BOUNDS){ s.x=-BOUNDS; s.vx*=-1; }
+      if(s.y>BOUNDS){ s.y=BOUNDS; s.vy*=-1; }
+      if(s.y<-BOUNDS){ s.y=-BOUNDS; s.vy*=-1; }
+      if(s.z>-SPHERE_NEAR){ s.z=-SPHERE_NEAR; s.vz*=-1; }
+      if(s.z<-SPHERE_FAR){ s.z=-SPHERE_FAR; s.vz*=-1; }
+
+      const o=i*8;
+      instanceData[o+0]=s.x; instanceData[o+1]=s.y; instanceData[o+2]=s.z;
+      instanceData[o+3]=s.size;
+      instanceData[o+4]=s.r; instanceData[o+5]=s.g; instanceData[o+6]=s.b;
+      instanceData[o+7]=0;
     }
+    device.queue.writeBuffer(instanceBuffer,0,instanceData);
 
-    // -------------------------
-    // WebGPU setup (unchanged)
-    // -------------------------
+    // camera
+    const camX = radius*Math.sin(phi)*Math.sin(theta);
+    const camY = radius*Math.cos(phi);
+    const camZ = radius*Math.sin(phi)*Math.cos(theta);
 
-    if (!navigator.gpu) throw new Error("WebGPU not supported");
+    const proj = perspective(Math.PI/4, canvas.width/canvas.height, SPHERE_NEAR, SPHERE_FAR);
+    const view = lookAt([camX,camY,camZ],[0,0,0],[0,1,0]);
+    const viewProj = multiply4(proj,view);
+    device.queue.writeBuffer(cameraBuffer,0,new Float32Array(viewProj));
 
-    const adapter = await navigator.gpu.requestAdapter();
-    const device = await adapter.requestDevice();
-    const context = configContext(device, canvas);
-
-    const shaderModule = shaderModuleFromCode(device, "shader");
-
-   /* const positions = new Float32Array([
-        -100,100,0,  -100,100,200,  100,100,0,  100,100,200,  
-        100,-100,0,  100,-100,200,  -100,-100,0, -100,-100,200,
-        -100,100,0,  -100,100,200
-    ]); 
-
-    const positions = new Float32Array([
-        0,100,0,    0,100,100,   100,20,0,    100,20,100,
-        50,-100,0, 50,-100,100,  -50,-100,0,  -50,-100,100,
-        -100,20,0,  -100,20,100,   0,100,0,     0,100, 100
-    ]);
-*/
-    const positions = new Float32Array([
-    // side 0
-     0, 100,   0,
-     0, 100, 100,
-
-    // side 1
-   100,  20,   0,
-   100,  20, 100,
-
-    // side 2
-    50,-100,   0,
-    50,-100, 100,
-
-    // side 3
-   -50,-100,   0,
-   -50,-100, 100,
-
-    // side 4
-  -100,  20,   0,
-  -100,  20, 100,
-
-    // close the loop for side 5 (repeat P0)
-     0, 100,   0,
-     0, 100, 100
-]);
-
-
-    const positionBuffer = createGPUBuffer(device, positions, GPUBufferUsage.VERTEX);
-
-    let transformMatrix = buildTransform();
-    let transformUBO = createGPUBuffer(device, transformMatrix, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-
-    let projectionMatrix = glMatrix.mat4.perspective(glMatrix.mat4.create(), 1.4, 640/480, 0.1, 1000);
-    let projectionUBO = createGPUBuffer(device, projectionMatrix, GPUBufferUsage.UNIFORM);
-
-    const uniformBindGroupLayout = device.createBindGroupLayout({
-        entries: [
-            { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
-            { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: {} }
-        ]
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments:[{view:context.getCurrentTexture().createView(),
+        clearValue:{r:0.6,g:0.6,b:0.6,a:1}, loadOp:"clear", storeOp:"store"}],
+      depthStencilAttachment:{
+        view:depthTexture.createView(),
+        depthClearValue:1, depthLoadOp:"clear", depthStoreOp:"store"
+      }
     });
 
-    const uniformBindGroup = device.createBindGroup({
-        layout: uniformBindGroupLayout,
-        entries: [
-            { binding: 0, resource: { buffer: transformUBO }},
-            { binding: 1, resource: { buffer: projectionUBO }}
-        ]
-    });
+    // draw spheres
+    pass.setPipeline(spherePipeline);
+    pass.setBindGroup(0,bindGroup);
+    pass.setVertexBuffer(0,posBuf);
+    pass.setVertexBuffer(1,normBuf);
+    pass.setVertexBuffer(2,instanceBuffer);
+    pass.setIndexBuffer(indBuf,"uint32");
+    pass.drawIndexed(sphere.ind.length,SPHERE_COUNT);
 
-    const pipeline = device.createRenderPipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [uniformBindGroupLayout] }),
-        vertex: {
-            module: shaderModule,
-            entryPoint: "vs_main",
-            buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }]
-        },
-        fragment: {
-            module: shaderModule,
-            entryPoint: "fs_main",
-            targets: [{ format: navigator.gpu.getPreferredCanvasFormat() }]
-        },
-        primitive: { topology: "triangle-strip", frontFace: "ccw", cullMode: "none" },
-        depthStencil: { format: "depth24plus-stencil8", depthWriteEnabled: true, depthCompare: "less" }
-    });
+    // draw cube
+    pass.setPipeline(cubePipeline);
+    pass.setBindGroup(0,bindGroup);
+    pass.setVertexBuffer(0,cubeBuffer);
+    pass.draw(cubeVerts.length/3);
 
-    const depthTexture = device.createTexture({
-        size: [canvas.width, canvas.height],
-        format: "depth24plus-stencil8",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT
-    });
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(frame);
+  }
 
-    const depthView = depthTexture.createView();
-
-    // ⭐ draw() is inside webgpu() so it can see all variables
-    function draw() {
-        
-        transformMatrix = buildTransform();
-        device.queue.writeBuffer(transformUBO, 0, transformMatrix);
-
-        const colorView = context.getCurrentTexture().createView();
-
-        const encoder = device.createCommandEncoder();
-        const pass = encoder.beginRenderPass({
-            colorAttachments: [{
-                view: colorView,
-                clearValue: { r: 0.6, g: 0.6, b: 0.6, a: 1 },
-                loadOp: "clear",
-                storeOp: "store"
-            }],
-            depthStencilAttachment: {
-                view: depthView,
-                depthClearValue: 1,
-                depthLoadOp: "clear",
-                depthStoreOp: "store",
-                stencilClearValue: 0,
-                stencilLoadOp: "clear",
-                stencilStoreOp: "store"
-            }
-        });
-
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, uniformBindGroup);
-        pass.setVertexBuffer(0, positionBuffer);
-
-        // draw as many vertices as contained in positions array
-        pass.draw( positions.length/3 );
-
-        pass.end();
-
-        device.queue.submit([encoder.finish()]);
-    }
-
-    // ⭐ Mouse interaction (inside webgpu so draw() is visible)
-    let dragging = false;
-    let lastX = 0;
-    let lastY = 0;
-
-    canvas.addEventListener("mousedown", e => {
-        dragging = true;
-        lastX = e.clientX;
-        lastY = e.clientY;
-    });
-
-    window.addEventListener("mouseup", () => dragging = false);
-
-    window.addEventListener("mousemove", e => {
-        if (!dragging) return;
-
-        const dx = e.clientX - lastX;
-        const dy = e.clientY - lastY;
-        lastX = e.clientX;
-        lastY = e.clientY;
-
-        angleY -= dx * 0.01;
-        angleX += dy * 0.01;
-
-        draw();   // ⭐ only draw when dragging
-    });
-
-    // initial draw
-    draw();
+  frame();
 }
 
-webgpu();
+init();
+
 </script>
+</body>
 </html>
