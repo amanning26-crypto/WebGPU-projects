@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WebGPU Two Spheres</title>
+<style>
+body { margin:0; overflow:hidden; background:#888; }
+canvas { width:100vw; height:100vh; display:block; }
+</style>
+</head>
+
+<body>
+<canvas id="gfx"></canvas>
+
+<script type="module">
+
+if (!navigator.gpu) {
+    document.body.innerHTML = "WebGPU not supported in this browser.";
+    throw new Error("WebGPU unsupported");
+}
+
+const canvas = document.getElementById("gfx");
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+
+const context = canvas.getContext("webgpu");
+
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+context.configure({
+    device,
+    format,
+    alphaMode: "opaque"
+});
+
+canvas.width = canvas.clientWidth * devicePixelRatio;
+canvas.height = canvas.clientHeight * devicePixelRatio;
+
+const depthTexture = device.createTexture({
+    size: [canvas.width, canvas.height],
+    format: "depth24plus",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT
+});
+
+function createSphere(radius, latBands, longBands){
+
+    const positions = [];
+    const normals = [];
+    const indices = [];
+
+    for (let lat=0; lat<=latBands; lat++){
+        const theta = lat * Math.PI / latBands;
+        const sinTheta = Math.sin(theta);
+        const cosTheta = Math.cos(theta);
+
+        for (let lon=0; lon<=longBands; lon++){
+            const phi = lon * 2*Math.PI / longBands;
+            const sinPhi = Math.sin(phi);
+            const cosPhi = Math.cos(phi);
+
+            const x = cosPhi * sinTheta;
+            const y = cosTheta;
+            const z = sinPhi * sinTheta;
+
+            positions.push(radius*x, radius*y, radius*z);
+            normals.push(x,y,z);
+        }
+    }
+
+    for (let lat=0; lat<latBands; lat++){
+        for (let lon=0; lon<longBands; lon++){
+
+            const first = (lat*(longBands+1))+lon;
+            const second = first + longBands + 1;
+
+            indices.push(first, second, first+1);
+            indices.push(second, second+1, first+1);
+        }
+    }
+
+    return {
+        positions: new Float32Array(positions),
+        normals: new Float32Array(normals),
+        indices: new Uint32Array(indices)
+    };
+}
+
+const sphere = createSphere(0.6, 32, 32);
+
+function createBuffer(data, usage){
+    const buffer = device.createBuffer({
+        size: data.byteLength,
+        usage,
+        mappedAtCreation: true
+    });
+    new data.constructor(buffer.getMappedRange()).set(data);
+    buffer.unmap();
+    return buffer;
+}
+
+const positionBuffer = createBuffer(
+    sphere.positions,
+    GPUBufferUsage.VERTEX
+);
+
+const normalBuffer = createBuffer(
+    sphere.normals,
+    GPUBufferUsage.VERTEX
+);
+
+const indexBuffer = createBuffer(
+    sphere.indices,
+    GPUBufferUsage.INDEX
+);
+
+const shader = device.createShaderModule({
+code:`
+
+struct VSOut{
+    @builtin(position) position: vec4f,
+    @location(0) normal: vec3f
+};
+
+@vertex
+fn vs(
+    @location(0) position: vec3f,
+    @location(1) normal: vec3f
+) -> VSOut {
+
+    var out:VSOut;
+
+    out.position = vec4f(position,1.0);
+    out.normal = normal;
+
+    return out;
+}
+
+@fragment
+fn fs(in:VSOut) -> @location(0) vec4f {
+
+    let light = normalize(vec3f(1.0,1.0,1.0));
+    let d = max(dot(in.normal,light),0.0);
+
+    let base = vec3f(0.3,0.6,1.0);
+
+    return vec4f(base*d + 0.1,1.0);
+}
+`
+});
+
+const pipeline = device.createRenderPipeline({
+
+layout:"auto",
+
+vertex:{
+module:shader,
+entryPoint:"vs",
+buffers:[
+{
+arrayStride:12,
+attributes:[{shaderLocation:0,offset:0,format:"float32x3"}]
+},
+{
+arrayStride:12,
+attributes:[{shaderLocation:1,offset:0,format:"float32x3"}]
+}
+]
+},
+
+fragment:{
+module:shader,
+entryPoint:"fs",
+targets:[{format}]
+},
+
+primitive:{
+topology:"triangle-list",
+cullMode:"back"
+},
+
+depthStencil:{
+format:"depth24plus",
+depthWriteEnabled:true,
+depthCompare:"less"
+}
+
+});
+
+function frame(){
+
+const encoder = device.createCommandEncoder();
+
+const pass = encoder.beginRenderPass({
+
+colorAttachments:[{
+view:context.getCurrentTexture().createView(),
+clearValue:{r:0.6,g:0.6,b:0.6,a:1},
+loadOp:"clear",
+storeOp:"store"
+}],
+
+depthStencilAttachment:{
+view:depthTexture.createView(),
+depthClearValue:1,
+depthLoadOp:"clear",
+depthStoreOp:"store"
+}
+
+});
+
+pass.setPipeline(pipeline);
+
+pass.setVertexBuffer(0, positionBuffer);
+pass.setVertexBuffer(1, normalBuffer);
+pass.setIndexBuffer(indexBuffer,"uint32");
+
+pass.drawIndexed(sphere.indices.length,2); // draw two spheres
+
+pass.end();
+
+device.queue.submit([encoder.finish()]);
+
+requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>
