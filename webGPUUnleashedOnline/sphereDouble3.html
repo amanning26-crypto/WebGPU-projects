@@ -239,9 +239,6 @@ const instanceBuffer = device.createBuffer({
  usage:GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
 });
 
-new Float32Array(instanceBuffer.getMappedRange()).set(instanceData);
-instanceBuffer.unmap();
-
 
 
 function frame(){
