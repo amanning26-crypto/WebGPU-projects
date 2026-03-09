@@ -2,23 +2,20 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>WebGPU Shiny Spheres</title>
+    <title>WebGPU Shiny Spheres - Fixed</title>
     <style>
-        body { margin: 0; background: #050505; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; }
-        canvas { width: 100%; height: 100%; display: block; }
-        #info { position: absolute; top: 20px; color: white; pointer-events: none; text-shadow: 1px 1px 2px black; }
+        body { margin: 0; background: #050505; overflow: hidden; }
+        canvas { width: 100vw; height: 100vh; display: block; }
     </style>
 </head>
 <body>
-    <div id="info">WebGPU: Two Shiny Spheres</div>
     <canvas id="gpuCanvas"></canvas>
 
     <script type="module">
-        // --- WGSL Shaders ---
         const shaderSource = `
             struct Uniforms {
-                modelViewProjectionMatrix : mat4x4<f32>,
-                modelMatrix : mat4x4<f32>,
+                mvp : mat4x4<f32>,
+                model : mat4x4<f32>,
                 color : vec4<f32>,
             };
             @binding(0) @group(0) var<uniform> uniforms : Uniforms;
@@ -32,187 +29,151 @@
             @vertex
             fn vs_main(@location(0) pos : vec3<f32>, @location(1) normal : vec3<f32>) -> VertexOutput {
                 var output : VertexOutput;
-                output.Position = uniforms.modelViewProjectionMatrix * vec4<f32>(pos, 1.0);
-                output.FragPos = (uniforms.modelMatrix * vec4<f32>(pos, 1.0)).xyz;
-                output.FragNormal = (uniforms.modelMatrix * vec4<f32>(normal, 0.0)).xyz;
+                output.Position = uniforms.mvp * vec4<f32>(pos, 1.0);
+                output.FragPos = (uniforms.model * vec4<f32>(pos, 1.0)).xyz;
+                // Normal matrix (simplified for uniform scaling)
+                output.FragNormal = (uniforms.model * vec4<f32>(normal, 0.0)).xyz;
                 return output;
             }
 
             @fragment
             fn fs_main(@location(0) FragPos : vec3<f32>, @location(1) FragNormal : vec3<f32>) -> @location(0) vec4<f32> {
                 let lightPos = vec3<f32>(5.0, 5.0, 5.0);
-                let viewPos = vec3<f32>(0.0, 0.0, 4.0);
+                let viewPos = vec3<f32>(0.0, 0.0, 5.0);
                 let N = normalize(FragNormal);
                 let L = normalize(lightPos - FragPos);
                 let V = normalize(viewPos - FragPos);
-                let R = reflect(-L, N);
+                let H = normalize(L + V); // Blinn-Phong
 
-                // Lighting components
-                let ambient = 0.15 * uniforms.color.rgb;
-                let diffuse = max(dot(N, L), 0.0) * uniforms.color.rgb;
-                let specular = pow(max(dot(V, R), 0.0), 40.0) * vec3<f32>(1.0, 1.0, 1.0); // Shiny white highlight
+                let ambient = 0.1 * uniforms.color.rgb;
+                let diff = max(dot(N, L), 0.0);
+                let diffuse = diff * uniforms.color.rgb;
+                let spec = pow(max(dot(N, H), 0.0), 64.0);
+                let specular = spec * vec3<f32>(1.0, 1.0, 1.0);
 
                 return vec4<f32>(ambient + diffuse + specular, 1.0);
             }
         `;
 
-        // --- Sphere Geometry Generator ---
-        function createSphere(radius = 1, segments = 32) {
-            const vertices = [];
-            const indices = [];
-            for (let lat = 0; lat <= segments; lat++) {
-                let theta = lat * Math.PI / segments;
-                let sinTheta = Math.sin(theta);
-                let cosTheta = Math.cos(theta);
-                for (let lon = 0; lon <= segments; lon++) {
-                    let phi = lon * 2 * Math.PI / segments;
-                    let x = Math.cos(phi) * sinTheta;
-                    let y = cosTheta;
-                    let z = Math.sin(phi) * sinTheta;
-                    vertices.push(x * radius, y * radius, z * radius, x, y, z);
+        // --- Minimal Matrix Math ---
+        const Mat4 = {
+            perspective: (fovy, aspect, near, far) => {
+                const f = 1.0 / Math.tan(fovy / 2);
+                const nf = 1 / (near - far);
+                return new Float32Array([
+                    f / aspect, 0, 0, 0,
+                    0, f, 0, 0,
+                    0, 0, (far + near) * nf, -1,
+                    0, 0, (2 * far * near) * nf, 0
+                ]);
+            },
+            translation: (x, y, z) => new Float32Array([
+                1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  x, y, z, 1
+            ]),
+            multiply: (a, b) => {
+                const out = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        out[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j] + a[i * 4 + 1] * b[1 * 4 + j] +
+                                         a[i * 4 + 2] * b[2 * 4 + j] + a[i * 4 + 3] * b[3 * 4 + j];
+                    }
+                }
+                return out;
+            }
+        };
+
+        function createSphere(radius, segments) {
+            const v = []; const idx = [];
+            for (let i = 0; i <= segments; i++) {
+                const vAngle = i * Math.PI / segments;
+                const y = Math.cos(vAngle);
+                const rPart = Math.sin(vAngle);
+                for (let j = 0; j <= segments; j++) {
+                    const hAngle = j * 2 * Math.PI / segments;
+                    const x = rPart * Math.cos(hAngle);
+                    const z = rPart * Math.sin(hAngle);
+                    v.push(x * radius, y * radius, z * radius, x, y, z);
                 }
             }
-            for (let lat = 0; lat < segments; lat++) {
-                for (let lon = 0; lon < segments; lon++) {
-                    let first = (lat * (segments + 1)) + lon;
-                    let second = first + segments + 1;
-                    indices.push(first, second, first + 1, second, second + 1, first + 1);
+            for (let i = 0; i < segments; i++) {
+                for (let j = 0; j < segments; j++) {
+                    const first = (i * (segments + 1)) + j;
+                    const second = first + segments + 1;
+                    idx.push(first, second, first + 1, second, second + 1, first + 1);
                 }
             }
-            return { vertices: new Float32Array(vertices), indices: new Uint16Array(indices) };
+            return { v: new Float32Array(v), i: new Uint16Array(idx) };
         }
 
-        // --- WebGPU Logic ---
-        async function init() {
-            if (!navigator.gpu) {
-                document.getElementById('info').innerText = "WebGPU not supported in this browser.";
-                return;
-            }
-
-            const adapter = await navigator.gpu.requestAdapter();
-            const device = await adapter.requestDevice();
+        async function run() {
             const canvas = document.getElementById('gpuCanvas');
+            const adapter = await navigator.gpu?.requestAdapter();
+            const device = await adapter?.requestDevice();
+            if (!device) return alert("WebGPU not supported");
+
             const context = canvas.getContext('webgpu');
+            const format = navigator.gpu.getPreferredCanvasFormat();
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            context.configure({ device, format });
 
-            const devicePixelRatio = window.devicePixelRatio || 1;
-            canvas.width = window.innerWidth * devicePixelRatio;
-            canvas.height = window.innerHeight * devicePixelRatio;
-            const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
-
-            context.configure({ device, format: presentationFormat, alphaMode: 'premultiplied' });
-
-            const shaderModule = device.createShaderModule({ code: shaderSource });
-            const sphereData = createSphere(1, 48);
-
-            const vertexBuffer = device.createBuffer({
-                size: sphereData.vertices.byteLength,
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-                mappedAtCreation: true
-            });
-            new Float32Array(vertexBuffer.getMappedRange()).set(sphereData.vertices);
-            vertexBuffer.unmap();
-
-            const indexBuffer = device.createBuffer({
-                size: sphereData.indices.byteLength,
-                usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-                mappedAtCreation: true
-            });
-            new Uint16Array(indexBuffer.getMappedRange()).set(sphereData.indices);
-            indexBuffer.unmap();
+            const sphere = createSphere(1, 48);
+            const vBuf = device.createBuffer({ size: sphere.v.byteLength, usage: GPUBufferUsage.VERTEX, mappedAtCreation: true });
+            new Float32Array(vBuf.getMappedRange()).set(sphere.v); vBuf.unmap();
+            const iBuf = device.createBuffer({ size: sphere.i.byteLength, usage: GPUBufferUsage.INDEX, mappedAtCreation: true });
+            new Uint16Array(iBuf.getMappedRange()).set(sphere.i); iBuf.unmap();
 
             const pipeline = device.createRenderPipeline({
                 layout: 'auto',
                 vertex: {
-                    module: shaderModule,
+                    module: device.createShaderModule({ code: shaderSource }),
                     entryPoint: 'vs_main',
-                    buffers: [{
-                        arrayStride: 24,
-                        attributes: [
-                            { shaderLocation: 0, offset: 0, format: 'float32x3' }, // Position
-                            { shaderLocation: 1, offset: 12, format: 'float32x3' } // Normal
-                        ]
-                    }]
+                    buffers: [{ arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }, { shaderLocation: 1, offset: 12, format: 'float32x3' }] }]
                 },
                 fragment: {
-                    module: shaderModule,
+                    module: device.createShaderModule({ code: shaderSource }),
                     entryPoint: 'fs_main',
-                    targets: [{ format: presentationFormat }]
+                    targets: [{ format }]
                 },
                 primitive: { topology: 'triangle-list' },
                 depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' }
             });
 
-            const depthTexture = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: 'depth24plus',
-                usage: GPUTextureUsage.RENDER_ATTACHMENT
-            });
+            const depthTex = device.createTexture({ size: [canvas.width, canvas.height], format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+            const uBuf = device.createBuffer({ size: 256 * 2, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            const bindGroup1 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uBuf, offset: 0, size: 144 } }] });
+            const bindGroup2 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uBuf, offset: 256, size: 144 } }] });
 
-            // Create two uniform buffers for two spheres
-            const uniformBufferSize = 4 * 16 * 2 + 16; // 2 matrices + 1 color
-            const uniformBuffer1 = device.createBuffer({ size: uniformBufferSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-            const uniformBuffer2 = device.createBuffer({ size: uniformBufferSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            const proj = Mat4.perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 100);
 
-            const bindGroup1 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uniformBuffer1 } }] });
-            const bindGroup2 = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uniformBuffer2 } }] });
+            function frame(now) {
+                const t = now * 0.001;
+                const render = (offset, x, color) => {
+                    const model = Mat4.translation(x, Math.sin(t) * 0.5, -6);
+                    const mvp = Mat4.multiply(proj, model);
+                    const data = new Float32Array(36);
+                    data.set(mvp); data.set(model, 16); data.set(color, 32);
+                    device.queue.writeBuffer(uBuf, offset, data);
+                };
+                render(0, -1.5, [0, 0.8, 1, 1]); // Blue
+                render(256, 1.5, [1, 0.8, 0, 1]); // Gold
 
-            function getMatrices(t, xOffset) {
-                const projection = new Float32Array([
-                    1, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1, -1, 0, 0, -1, 0 // Simple Perspective
-                ]);
-                const model = new Float32Array([
-                    Math.cos(t), 0, -Math.sin(t), 0,
-                    0, 1, 0, 0,
-                    Math.sin(t), 0, Math.cos(t), 0,
-                    xOffset, 0, -3, 1
-                ]);
-                // Basic MVP math (truncated for brevity)
-                const mvp = new Float32Array(16);
-                for(let i=0; i<16; i++) mvp[i] = projection[i] * 0.5 + model[i] * 0.5; // Dummy multiply for viz
-                return { mvp, model };
-            }
-
-            function frame() {
-                const t = performance.now() * 0.001;
-                const commandEncoder = device.createCommandEncoder();
-                const passEncoder = commandEncoder.beginRenderPass({
-                    colorAttachments: [{
-                        view: context.getCurrentTexture().createView(),
-                        clearValue: { r: 0.02, g: 0.02, b: 0.02, a: 1.0 },
-                        loadOp: 'clear', storeOp: 'store'
-                    }],
-                    depthStencilAttachment: {
-                        view: depthTexture.createView(),
-                        depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store'
-                    }
+                const encoder = device.createCommandEncoder();
+                const pass = encoder.beginRenderPass({
+                    colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.05, 0.05, 0.05, 1], loadOp: 'clear', storeOp: 'store' }],
+                    depthStencilAttachment: { view: depthTex.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
                 });
-
-                passEncoder.setPipeline(pipeline);
-                passEncoder.setVertexBuffer(0, vertexBuffer);
-                passEncoder.setIndexBuffer(indexBuffer, 'uint16');
-
-                // Sphere 1: Shiny Blue
-                const data1 = new Float32Array(36); 
-                data1.set([1,0,0,0, 0,1,0,0, 0,0,1,0, -1.2,0,-4,1, 1,0,0,0, 0,1,0,0, 0,0,1,0, -1.2,0,-4,1, 0,0.6,1,1]);
-                device.queue.writeBuffer(uniformBuffer1, 0, data1);
-                passEncoder.setBindGroup(0, bindGroup1);
-                passEncoder.drawIndexed(sphereData.indices.length);
-
-                // Sphere 2: Shiny Gold
-                const data2 = new Float32Array(36);
-                data2.set([1,0,0,0, 0,1,0,0, 0,0,1,0, 1.2,0,-4,1, 1,0,0,0, 0,1,0,0, 0,0,1,0, 1.2,0,-4,1, 1,0.8,0,1]);
-                device.queue.writeBuffer(uniformBuffer2, 0, data2);
-                passEncoder.setBindGroup(0, bindGroup2);
-                passEncoder.drawIndexed(sphereData.indices.length);
-
-                passEncoder.end();
-                device.queue.submit([commandEncoder.finish()]);
+                pass.setPipeline(pipeline);
+                pass.setVertexBuffer(0, vBuf);
+                pass.setIndexBuffer(iBuf, 'uint16');
+                pass.setBindGroup(0, bindGroup1); pass.drawIndexed(sphere.i.length);
+                pass.setBindGroup(0, bindGroup2); pass.drawIndexed(sphere.i.length);
+                pass.end();
+                device.queue.submit([encoder.finish()]);
                 requestAnimationFrame(frame);
             }
             requestAnimationFrame(frame);
         }
-
-        init();
+        run();
     </script>
 </body>
 </html>
