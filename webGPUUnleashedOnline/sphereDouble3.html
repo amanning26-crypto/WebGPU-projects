@@ -47,6 +47,18 @@ const depthTexture = device.createTexture({
  usage:GPUTextureUsage.RENDER_ATTACHMENT
 });
 
+
+function perspective(fov, aspect, near, far){
+  const f = 1 / Math.tan(fov/2);
+  const nf = 1 / (far - near);
+  return [
+    f/aspect, 0, 0, 0,
+    0, f, 0, 0,
+    0, 0, far * nf, 1,
+    0, 0, -near*far*nf, 0
+  ];
+}
+
 function createSphere(r, lat, lon){
 
 let p=[],n=[],i=[];
