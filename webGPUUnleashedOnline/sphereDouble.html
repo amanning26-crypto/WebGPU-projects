@@ -14,7 +14,7 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             overflow: hidden;
         }
         canvas {
@@ -32,12 +32,16 @@
             color: #aaa;
             white-space: pre-wrap;
             text-align: center;
+            max-width: 800px;
         }
         .error {
             color: #ff6b6b;
         }
         .success {
             color: #6bff6b;
+        }
+        .warning {
+            color: #ffd93d;
         }
     </style>
 </head>
@@ -50,31 +54,45 @@
             const canvas = document.getElementById('gpuCanvas');
             const statusDiv = document.getElementById('status');
 
+            // Helper function to update status
+            function updateStatus(text, isError = false) {
+                console.log(text);
+                statusDiv.innerHTML = isError ? `<span class="error">${text}</span>` : text;
+            }
+
             // Check for WebGPU support
             if (!navigator.gpu) {
-                statusDiv.innerHTML = '<span class="error">WebGPU not supported. Please use Chrome Canary with --enable-unsafe-webgpu flag</span>';
+                updateStatus('WebGPU not supported. Please use Chrome Canary with --enable-unsafe-webgpu flag', true);
                 return;
             }
 
             try {
-                statusDiv.innerText = '✓ WebGPU supported\nRequesting adapter...';
+                updateStatus('✓ WebGPU supported\nRequesting adapter (this may take a moment)...');
                 
-                // Request adapter with options
-                const adapter = await navigator.gpu.requestAdapter({
+                // Request adapter with timeout
+                const adapterPromise = navigator.gpu.requestAdapter({
                     powerPreference: 'high-performance'
                 });
+                
+                // Add timeout to prevent hanging
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Adapter request timed out after 10 seconds')), 10000);
+                });
+                
+                const adapter = await Promise.race([adapterPromise, timeoutPromise]);
                 
                 if (!adapter) {
                     throw new Error('No appropriate GPU adapter found');
                 }
 
-                statusDiv.innerText = '✓ Adapter found\nRequesting device...';
+                updateStatus('✓ Adapter found\nRequesting device...');
                 
-                // Request device with explicit limits
+                // Request device with required features and limits
                 const device = await adapter.requestDevice({
+                    requiredFeatures: [],
                     requiredLimits: {
                         maxBindGroups: 2,
-                        maxUniformBuffersPerShaderStage: 1,
+                        maxUniformBuffersPerShaderStage: 2,
                         maxStorageBuffersPerShaderStage: 0,
                         maxTextureDimension1D: 8192,
                         maxTextureDimension2D: 8192,
@@ -83,11 +101,11 @@
                     }
                 });
 
-                statusDiv.innerText = '✓ Device obtained\nConfiguring canvas...';
+                updateStatus('✓ Device obtained\nConfiguring canvas...');
 
                 // Handle device loss
                 device.lost.then((info) => {
-                    statusDiv.innerHTML = `<span class="error">Device lost: ${info.message}</span>`;
+                    updateStatus(`Device lost: ${info.message}`, true);
                 });
 
                 const context = canvas.getContext('webgpu');
@@ -102,30 +120,32 @@
                     alphaMode: 'opaque',
                 });
 
-                statusDiv.innerText = '✓ Canvas configured\nCreating 3D environment...';
+                updateStatus('✓ Canvas configured\nCreating 3D environment...');
 
-                // --- Create 3D textured background (sky sphere) ---
+                // --- Create 3D textured background (procedural sky texture) ---
                 function createProceduralSkyTexture(device, size = 1024) {
                     const canvas = new OffscreenCanvas(size, size);
                     const ctx = canvas.getContext('2d');
                     
                     // Create a gradient sky
                     const gradient = ctx.createLinearGradient(0, 0, 0, size);
-                    gradient.addColorStop(0, '#1a2f3f');
-                    gradient.addColorStop(0.5, '#3a5f7a');
+                    gradient.addColorStop(0, '#0a1a2a');
+                    gradient.addColorStop(0.3, '#2a4a6a');
+                    gradient.addColorStop(0.7, '#4a7a9a');
                     gradient.addColorStop(1, '#6b8fa7');
                     ctx.fillStyle = gradient;
                     ctx.fillRect(0, 0, size, size);
                     
-                    // Add clouds (procedural noise pattern)
-                    for (let i = 0; i < 50; i++) {
+                    // Add procedural clouds
+                    for (let i = 0; i < 30; i++) {
                         const x = Math.random() * size;
-                        const y = Math.random() * size * 0.6;
-                        const r = 30 + Math.random() * 50;
+                        const y = Math.random() * size * 0.7;
+                        const r = 40 + Math.random() * 80;
                         
                         const cloudGradient = ctx.createRadialGradient(x, y, 0, x, y, r);
-                        cloudGradient.addColorStop(0, 'rgba(255,255,255,0.3)');
-                        cloudGradient.addColorStop(0.5, 'rgba(255,255,255,0.1)');
+                        cloudGradient.addColorStop(0, 'rgba(255,255,255,0.4)');
+                        cloudGradient.addColorStop(0.4, 'rgba(255,255,255,0.2)');
+                        cloudGradient.addColorStop(0.7, 'rgba(255,255,255,0.1)');
                         cloudGradient.addColorStop(1, 'rgba(255,255,255,0)');
                         
                         ctx.fillStyle = cloudGradient;
@@ -134,13 +154,13 @@
                         ctx.fill();
                     }
                     
-                    // Add stars in the top portion
-                    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-                    for (let i = 0; i < 200; i++) {
+                    // Add stars in the upper portion
+                    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+                    for (let i = 0; i < 150; i++) {
                         const x = Math.random() * size;
-                        const y = Math.random() * size * 0.4;
-                        const size_star = 1 + Math.random() * 2;
-                        ctx.fillRect(x, y, size_star, size_star);
+                        const y = Math.random() * size * 0.3;
+                        const starSize = 1 + Math.random() * 2;
+                        ctx.fillRect(x, y, starSize, starSize);
                     }
                     
                     const imageData = ctx.getImageData(0, 0, size, size);
@@ -162,13 +182,13 @@
                     return texture;
                 }
 
-                // Create a large sphere for the background (sky sphere)
-                function createSkySphereData(radius = 50.0, slices = 64, stacks = 32) {
+                // Create sphere data with normals and UVs
+                function createSphereData(radius = 1.0, slices = 48, stacks = 32) {
                     const vertices = [];
                     const indices = [];
                     
                     for (let i = 0; i <= stacks; i++) {
-                        const phi = Math.PI / 2 - i * Math.PI / stacks;
+                        const phi = Math.PI / 2 - i * Math.PI / stacks; // -pi/2 to pi/2
                         const y = radius * Math.sin(phi);
                         const r = radius * Math.cos(phi);
                         
@@ -177,43 +197,7 @@
                             const x = r * Math.cos(theta);
                             const z = r * Math.sin(theta);
                             
-                            // UV mapping for sphere
-                            const u = j / slices;
-                            const v = i / stacks;
-                            
-                            vertices.push(x, y, z, u, v);
-                        }
-                    }
-                    
-                    for (let i = 0; i < stacks; i++) {
-                        for (let j = 0; j < slices; j++) {
-                            const first = i * (slices + 1) + j;
-                            const second = first + slices + 1;
-                            
-                            indices.push(first, second, first + 1);
-                            indices.push(second, second + 1, first + 1);
-                        }
-                    }
-                    
-                    return { vertices, indices };
-                }
-
-                // Create sphere data for the foreground spheres
-                function createSphereData(radius = 1.0, slices = 64, stacks = 32) {
-                    const vertices = [];
-                    const indices = [];
-                    
-                    for (let i = 0; i <= stacks; i++) {
-                        const phi = Math.PI / 2 - i * Math.PI / stacks;
-                        const y = radius * Math.sin(phi);
-                        const r = radius * Math.cos(phi);
-                        
-                        for (let j = 0; j <= slices; j++) {
-                            const theta = j * 2 * Math.PI / slices;
-                            const x = r * Math.cos(theta);
-                            const z = r * Math.sin(theta);
-                            
-                            // Normal and position are the same for a sphere centered at origin
+                            // Normal (same as position for unit sphere)
                             const nx = x / radius;
                             const ny = y / radius;
                             const nz = z / radius;
@@ -239,105 +223,52 @@
                     return { vertices, indices };
                 }
 
-                // Create textures and geometry
-                const skyTexture = createProceduralSkyTexture(device, 1024);
+                // Create the sphere geometry
+                updateStatus('Creating sphere geometry...');
+                const sphereData = createSphereData(1.0, 64, 48);
                 
-                const skySphereData = createSkySphereData(50.0, 64, 32);
-                const sphereData = createSphereData(1.0, 64, 32);
-
-                // Create buffers for sky sphere
-                const skyVertexBuffer = device.createBuffer({
-                    size: skySphereData.vertices.length * 4,
-                    usage: GPUBufferUsage.VERTEX,
-                    mappedAtCreation: true,
-                    label: 'sky vertex buffer'
-                });
-                new Float32Array(skyVertexBuffer.getMappedRange()).set(skySphereData.vertices);
-                skyVertexBuffer.unmap();
-
-                const skyIndexBuffer = device.createBuffer({
-                    size: skySphereData.indices.length * 4,
-                    usage: GPUBufferUsage.INDEX,
-                    mappedAtCreation: true,
-                    label: 'sky index buffer'
-                });
-                new Uint32Array(skyIndexBuffer.getMappedRange()).set(skySphereData.indices);
-                skyIndexBuffer.unmap();
-
-                // Create buffers for foreground spheres
-                const sphereVertexBuffer = device.createBuffer({
+                // Create vertex buffer
+                const vertexBuffer = device.createBuffer({
                     size: sphereData.vertices.length * 4,
                     usage: GPUBufferUsage.VERTEX,
                     mappedAtCreation: true,
                     label: 'sphere vertex buffer'
                 });
-                new Float32Array(sphereVertexBuffer.getMappedRange()).set(sphereData.vertices);
-                sphereVertexBuffer.unmap();
+                new Float32Array(vertexBuffer.getMappedRange()).set(sphereData.vertices);
+                vertexBuffer.unmap();
 
-                const sphereIndexBuffer = device.createBuffer({
+                // Create index buffer
+                const indexBuffer = device.createBuffer({
                     size: sphereData.indices.length * 4,
                     usage: GPUBufferUsage.INDEX,
                     mappedAtCreation: true,
                     label: 'sphere index buffer'
                 });
-                new Uint32Array(sphereIndexBuffer.getMappedRange()).set(sphereData.indices);
-                sphereIndexBuffer.unmap();
+                new Uint32Array(indexBuffer.getMappedRange()).set(sphereData.indices);
+                indexBuffer.unmap();
 
-                const skyIndexCount = skySphereData.indices.length;
-                const sphereIndexCount = sphereData.indices.length;
+                const indexCount = sphereData.indices.length;
 
-                // Create uniform buffer
+                // Create uniform buffer (two sets: one for background, one for spheres)
                 const uniformBuffer = device.createBuffer({
-                    size: 512, // Increased size for multiple matrices
+                    size: 1024, // Large enough for all uniforms
                     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
                     label: 'uniform buffer'
                 });
 
-                // Create sampler
+                // Create texture and sampler
+                updateStatus('Creating sky texture...');
+                const skyTexture = createProceduralSkyTexture(device, 1024);
+                
                 const sampler = device.createSampler({
                     magFilter: 'linear',
                     minFilter: 'linear',
                     mipmapFilter: 'linear',
-                    addressModeU: 'clamp-to-edge',
-                    addressModeV: 'clamp-to-edge',
+                    addressModeU: 'repeat',
+                    addressModeV: 'repeat',
                 });
 
-                // Shader for sky sphere
-                const skyShaderCode = `
-                    struct Uniforms {
-                        viewProj: mat4x4f,
-                        model: mat4x4f,
-                    }
-                    
-                    @group(0) @binding(0) var<uniform> uniforms: Uniforms;
-                    @group(0) @binding(1) var skySampler: sampler;
-                    @group(0) @binding(2) var skyTexture: texture_2d<f32>;
-                    
-                    struct VertexInput {
-                        @location(0) position: vec3f,
-                        @location(1) uv: vec2f,
-                    }
-                    
-                    struct VertexOutput {
-                        @builtin(position) pos: vec4f,
-                        @location(0) uv: vec2f,
-                    }
-                    
-                    @vertex
-                    fn vs_main(input: VertexInput) -> VertexOutput {
-                        var output: VertexOutput;
-                        output.pos = uniforms.viewProj * (uniforms.model * vec4f(input.position, 1.0));
-                        output.uv = input.uv;
-                        return output;
-                    }
-                    
-                    @fragment
-                    fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-                        return textureSample(skyTexture, skySampler, input.uv);
-                    }
-                `;
-
-                // Shader for transparent spheres
+                // --- SHADERS (fixed select issue) ---
                 const sphereShaderCode = `
                     struct Uniforms {
                         viewProj: mat4x4f,
@@ -345,8 +276,7 @@
                         model2: mat4x4f,
                         color1: vec4f,
                         color2: vec4f,
-                        lightDir: vec3f,
-                        padding: f32,
+                        lightDir: vec4f,
                     }
                     
                     @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -362,14 +292,22 @@
                         @location(0) uv: vec2f,
                         @location(1) worldNormal: vec3f,
                         @location(2) worldPos: vec3f,
-                        @location(3) @interpolate(flat) sphereId: u32,
+                        @location(3) color: vec4f,
                     }
                     
                     @vertex
                     fn vs_main(@builtin(instance_index) instance: u32, input: VertexInput) -> VertexOutput {
                         var output: VertexOutput;
                         
-                        let model = select(uniforms.model1, uniforms.model2, instance == 1u);
+                        // Manual matrix selection (fix for select() issue)
+                        var model: mat4x4f;
+                        if (instance == 0u) {
+                            model = uniforms.model1;
+                            output.color = uniforms.color1;
+                        } else {
+                            model = uniforms.model2;
+                            output.color = uniforms.color2;
+                        }
                         
                         let worldPos = model * vec4f(input.position, 1.0);
                         let worldNormal = (model * vec4f(input.normal, 0.0)).xyz;
@@ -378,43 +316,31 @@
                         output.uv = input.uv;
                         output.worldNormal = normalize(worldNormal);
                         output.worldPos = worldPos.xyz;
-                        output.sphereId = instance;
                         
                         return output;
                     }
                     
                     @fragment
                     fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-                        let lightDir = normalize(uniforms.lightDir);
+                        let lightDir = normalize(uniforms.lightDir.xyz);
                         let normal = normalize(input.worldNormal);
                         
-                        // Simple lighting
-                        let diffuse = max(dot(normal, lightDir), 0.2);
+                        // Simple diffuse lighting
+                        let diffuse = max(dot(normal, lightDir), 0.3);
                         
-                        var baseColor: vec4f;
-                        if (input.sphereId == 0u) {
-                            baseColor = uniforms.color1; // Red sphere
-                        } else {
-                            baseColor = uniforms.color2; // Blue sphere
-                        }
+                        // Add rim lighting for transparency effect
+                        let viewDir = normalize(vec3f(0.0, 2.0, 8.0) - input.worldPos);
+                        let fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.0);
                         
-                        // Add specular highlight
-                        let viewDir = normalize(vec3f(0.0, 2.0, 6.0) - input.worldPos);
-                        let halfVec = normalize(lightDir + viewDir);
-                        let specular = pow(max(dot(normal, halfVec), 0.0), 32.0) * 0.3;
+                        let baseColor = input.color;
+                        let litColor = baseColor.rgb * diffuse + vec3f(0.2) * fresnel;
                         
-                        let finalColor = baseColor.rgb * diffuse + vec3f(specular);
-                        
-                        return vec4f(finalColor, baseColor.a);
+                        return vec4f(litColor, baseColor.a);
                     }
                 `;
 
-                // Create shader modules
-                const skyShaderModule = device.createShaderModule({
-                    code: skyShaderCode,
-                    label: 'sky shader'
-                });
-
+                // Create shader module
+                updateStatus('Creating shader modules...');
                 const sphereShaderModule = device.createShaderModule({
                     code: sphereShaderCode,
                     label: 'sphere shader'
@@ -441,61 +367,21 @@
                     ]
                 });
 
-                // Create pipeline layouts
-                const skyPipelineLayout = device.createPipelineLayout({
+                // Create pipeline layout
+                const pipelineLayout = device.createPipelineLayout({
                     bindGroupLayouts: [bindGroupLayout]
                 });
 
-                const spherePipelineLayout = device.createPipelineLayout({
-                    bindGroupLayouts: [bindGroupLayout]
-                });
-
-                // Sky sphere pipeline
-                const skyPipeline = device.createRenderPipeline({
-                    layout: skyPipelineLayout,
-                    label: 'sky pipeline',
-                    vertex: {
-                        module: skyShaderModule,
-                        entryPoint: 'vs_main',
-                        buffers: [{
-                            arrayStride: 20, // position (12) + uv (8)
-                            attributes: [
-                                { format: 'float32x3', offset: 0, shaderLocation: 0 },
-                                { format: 'float32x2', offset: 12, shaderLocation: 1 }
-                            ]
-                        }]
-                    },
-                    fragment: {
-                        module: skyShaderModule,
-                        entryPoint: 'fs_main',
-                        targets: [{
-                            format: presentationFormat,
-                            blend: {
-                                color: { srcFactor: 'one', dstFactor: 'zero' },
-                                alpha: { srcFactor: 'one', dstFactor: 'zero' }
-                            }
-                        }]
-                    },
-                    primitive: {
-                        topology: 'triangle-list',
-                        cullMode: 'front', // Cull front faces to render inside of sphere
-                    },
-                    depthStencil: {
-                        depthWriteEnabled: true,
-                        depthCompare: 'less',
-                        format: 'depth24plus',
-                    }
-                });
-
-                // Sphere pipeline with blending
-                const spherePipeline = device.createRenderPipeline({
-                    layout: spherePipelineLayout,
+                // Create render pipeline with blending
+                updateStatus('Creating render pipeline...');
+                const pipeline = device.createRenderPipeline({
+                    layout: pipelineLayout,
                     label: 'sphere pipeline',
                     vertex: {
                         module: sphereShaderModule,
                         entryPoint: 'vs_main',
                         buffers: [{
-                            arrayStride: 32, // position (12) + normal (12) + uv (8)
+                            arrayStride: 32, // position(12) + normal(12) + uv(8)
                             attributes: [
                                 { format: 'float32x3', offset: 0, shaderLocation: 0 },
                                 { format: 'float32x3', offset: 12, shaderLocation: 1 },
@@ -533,17 +419,8 @@
                     }
                 });
 
-                // Create bind groups
-                const skyBindGroup = device.createBindGroup({
-                    layout: bindGroupLayout,
-                    entries: [
-                        { binding: 0, resource: { buffer: uniformBuffer } },
-                        { binding: 1, resource: sampler },
-                        { binding: 2, resource: skyTexture.createView() }
-                    ]
-                });
-
-                const sphereBindGroup = device.createBindGroup({
+                // Create bind group
+                const bindGroup = device.createBindGroup({
                     layout: bindGroupLayout,
                     entries: [
                         { binding: 0, resource: { buffer: uniformBuffer } },
@@ -562,18 +439,23 @@
 
                 // Matrix utilities
                 function mat4Identity() {
-                    return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+                    return new Float32Array([
+                        1, 0, 0, 0,
+                        0, 1, 0, 0,
+                        0, 0, 1, 0,
+                        0, 0, 0, 1
+                    ]);
                 }
 
                 function mat4Multiply(a, b) {
-                    let result = new Float32Array(16);
+                    const result = new Float32Array(16);
                     for (let i = 0; i < 4; i++) {
                         for (let j = 0; j < 4; j++) {
                             let sum = 0;
                             for (let k = 0; k < 4; k++) {
-                                sum += a[i*4+k] * b[k*4+j];
+                                sum += a[i*4 + k] * b[k*4 + j];
                             }
-                            result[i*4+j] = sum;
+                            result[i*4 + j] = sum;
                         }
                     }
                     return result;
@@ -581,17 +463,21 @@
 
                 function mat4Perspective(fov, aspect, near, far) {
                     const f = 1.0 / Math.tan(fov / 2);
-                    const nf = 1 / (near - far);
                     return new Float32Array([
                         f / aspect, 0, 0, 0,
                         0, f, 0, 0,
-                        0, 0, (far + near) * nf, -1,
-                        0, 0, (2 * far * near) * nf, 0
+                        0, 0, far / (far - near), 1,
+                        0, 0, -(far * near) / (far - near), 0
                     ]);
                 }
 
                 function mat4LookAt(eye, target, up) {
-                    const zAxis = normalize(subtract(eye, target));
+                    const zAxis = normalize([
+                        eye[0] - target[0],
+                        eye[1] - target[1],
+                        eye[2] - target[2]
+                    ]);
+                    
                     const xAxis = normalize(cross(up, zAxis));
                     const yAxis = cross(zAxis, xAxis);
                     
@@ -603,10 +489,22 @@
                     ]);
                 }
 
-                function subtract(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
-                function normalize(v) { const len = Math.hypot(...v); return v.map(x=>x/len); }
-                function cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
-                function dot(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+                function normalize(v) {
+                    const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+                    return [v[0]/len, v[1]/len, v[2]/len];
+                }
+
+                function cross(a, b) {
+                    return [
+                        a[1]*b[2] - a[2]*b[1],
+                        a[2]*b[0] - a[0]*b[2],
+                        a[0]*b[1] - a[1]*b[0]
+                    ];
+                }
+
+                function dot(a, b) {
+                    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+                }
 
                 function mat4Translate(translation, out) {
                     out[12] = translation[0];
@@ -618,84 +516,68 @@
                 function mat4RotateY(angle, out) {
                     const c = Math.cos(angle);
                     const s = Math.sin(angle);
-                    const temp = new Float32Array(out);
                     
-                    out[0] = temp[0] * c + temp[2] * -s;
-                    out[2] = temp[0] * s + temp[2] * c;
-                    out[4] = temp[4] * c + temp[6] * -s;
-                    out[6] = temp[4] * s + temp[6] * c;
-                    out[8] = temp[8] * c + temp[10] * -s;
-                    out[10] = temp[8] * s + temp[10] * c;
+                    // Rotate the 3x3 portion
+                    for (let i = 0; i < 3; i++) {
+                        const x = out[i];
+                        const z = out[i + 8];
+                        out[i] = x * c - z * s;
+                        out[i + 8] = x * s + z * c;
+                    }
                     
                     return out;
                 }
 
-                statusDiv.innerText = '✓ 3D environment created\nSetting up camera...';
+                updateStatus('Setting up camera and matrices...');
 
                 // Set up matrices
-                const aspect = canvas.width / canvas.height;
-                const projection = mat4Perspective(45 * Math.PI/180, aspect, 0.1, 1000);
+                const projection = mat4Perspective(45 * Math.PI/180, canvas.width / canvas.height, 0.1, 100);
                 
-                // Camera position
-                const eye = [0, 2, 8];
-                const target = [0, 0, 0];
-                const up = [0, 1, 0];
-                const view = mat4LookAt(eye, target, up);
-                const viewProj = mat4Multiply(projection, view);
+                // Sphere transforms
+                const model1 = mat4Translate([-2.2, 0.3, 0], mat4Identity());
+                const model2 = mat4Translate([2.2, -0.2, 1.0], mat4Identity());
                 
-                // Sky sphere model (large, surrounding everything)
-                const skyModel = mat4Identity();
-                
-                // Foreground spheres
-                const model1 = mat4Translate([-2.2, 0.5, 0], mat4Identity());
-                const model2 = mat4Translate([2.2, -0.3, 1.0], mat4Identity());
-                
-                // Rotate spheres slightly for better appearance
-                mat4RotateY(0.3, model1);
-                mat4RotateY(-0.2, model2);
+                // Rotate spheres for visual interest
+                mat4RotateY(0.5, model1);
+                mat4RotateY(-0.3, model2);
                 
                 const color1 = [0.9, 0.3, 0.3, 0.6]; // Red semi-transparent
                 const color2 = [0.2, 0.5, 0.9, 0.5]; // Blue semi-transparent
-                const lightDir = [1, 2, 1]; // Light direction
+                const lightDir = [1, 1, 1, 0]; // Light direction (w unused)
 
-                // Write uniforms
-                const uniformArray = new Float32Array(128); // Large enough for all data
-                
-                function updateUniforms(time) {
-                    // Update view matrix with slight rotation for animation
-                    const angle = time * 0.001;
-                    const animatedEye = [Math.sin(angle) * 8, 2, Math.cos(angle) * 8];
-                    const animatedView = mat4LookAt(animatedEye, target, up);
-                    const animatedViewProj = mat4Multiply(projection, animatedView);
-                    
-                    // Sky uniforms (first 32 bytes: viewProj + model)
-                    uniformArray.set(animatedViewProj, 0);
-                    uniformArray.set(skyModel, 16);
-                    
-                    // Sphere uniforms (starting at 32)
-                    uniformArray.set(animatedViewProj, 32);
-                    uniformArray.set(model1, 48);
-                    uniformArray.set(model2, 64);
-                    uniformArray.set(color1, 80);
-                    uniformArray.set(color2, 84);
-                    uniformArray.set(lightDir, 88);
-                    
-                    device.queue.writeBuffer(uniformBuffer, 0, uniformArray.buffer, 0, 128 * 4);
-                }
-
-                updateUniforms(0);
-
-                statusDiv.innerHTML = '<span class="success">✓ Ready!</span>\nRendering 3D scene with transparent spheres...';
-
-                let lastTime = 0;
+                // Animation variables
+                let time = 0;
 
                 // Render function
-                function render(time) {
+                function render() {
                     try {
-                        if (lastTime === 0) lastTime = time;
+                        time += 0.01;
                         
-                        // Update uniforms for animation
-                        updateUniforms(time);
+                        // Animate camera
+                        const radius = 8;
+                        const eye = [
+                            Math.sin(time * 0.5) * radius,
+                            2 + Math.sin(time) * 0.5,
+                            Math.cos(time * 0.5) * radius
+                        ];
+                        const target = [0, 0, 0];
+                        const up = [0, 1, 0];
+                        
+                        const view = mat4LookAt(eye, target, up);
+                        const viewProj = mat4Multiply(projection, view);
+                        
+                        // Update uniforms
+                        const uniformArray = new Float32Array(128);
+                        
+                        // Write matrices and colors
+                        uniformArray.set(viewProj, 0);      // 0-15
+                        uniformArray.set(model1, 16);       // 16-31
+                        uniformArray.set(model2, 32);       // 32-47
+                        uniformArray.set(color1, 48);       // 48-51
+                        uniformArray.set(color2, 52);       // 52-55
+                        uniformArray.set(lightDir, 56);      // 56-59
+                        
+                        device.queue.writeBuffer(uniformBuffer, 0, uniformArray.buffer, 0, 240);
                         
                         const commandEncoder = device.createCommandEncoder();
                         
@@ -704,7 +586,7 @@
                                 view: context.getCurrentTexture().createView(),
                                 loadOp: 'clear',
                                 storeOp: 'store',
-                                clearValue: { r: 0.1, g: 0.1, b: 0.2, a: 1.0 },
+                                clearValue: { r: 0.1, g: 0.15, b: 0.25, a: 1.0 },
                             }],
                             depthStencilAttachment: {
                                 view: depthTexture.createView(),
@@ -716,21 +598,14 @@
                         
                         const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
                         
-                        // Draw sky sphere first (without blending)
-                        passEncoder.setPipeline(skyPipeline);
-                        passEncoder.setBindGroup(0, skyBindGroup);
-                        passEncoder.setVertexBuffer(0, skyVertexBuffer);
-                        passEncoder.setIndexBuffer(skyIndexBuffer, 'uint32');
-                        passEncoder.drawIndexed(skyIndexCount, 1, 0, 0, 0);
+                        // Draw spheres
+                        passEncoder.setPipeline(pipeline);
+                        passEncoder.setBindGroup(0, bindGroup);
+                        passEncoder.setVertexBuffer(0, vertexBuffer);
+                        passEncoder.setIndexBuffer(indexBuffer, 'uint32');
                         
-                        // Draw transparent spheres
-                        passEncoder.setPipeline(spherePipeline);
-                        passEncoder.setBindGroup(0, sphereBindGroup);
-                        passEncoder.setVertexBuffer(0, sphereVertexBuffer);
-                        passEncoder.setIndexBuffer(sphereIndexBuffer, 'uint32');
-                        
-                        // Draw both spheres (2 instances)
-                        passEncoder.drawIndexed(sphereIndexCount, 2, 0, 0, 0);
+                        // Draw two spheres as instances
+                        passEncoder.drawIndexed(indexCount, 2, 0, 0, 0);
                         
                         passEncoder.end();
                         
@@ -739,15 +614,16 @@
                         requestAnimationFrame(render);
                     } catch (error) {
                         console.error('Render error:', error);
-                        statusDiv.innerHTML = `<span class="error">Render error: ${error.message}</span>`;
+                        updateStatus(`Render error: ${error.message}`, true);
                     }
                 }
 
+                updateStatus('<span class="success">✓ Ready!</span>\nRendering 3D transparent spheres...');
                 requestAnimationFrame(render);
 
             } catch (error) {
                 console.error('WebGPU initialization error:', error);
-                statusDiv.innerHTML = `<span class="error">Error: ${error.message}</span>`;
+                updateStatus(`Error: ${error.message}`, true);
             }
         })();
     </script>
