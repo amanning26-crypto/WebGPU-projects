@@ -271,7 +271,8 @@ if(s.x<-BOUNDS){ s.x=-BOUNDS; s.vx*=-1; }
 if(s.y>BOUNDS){ s.y=BOUNDS; s.vy*=-1; }
 if(s.y<-BOUNDS){ s.y=-BOUNDS; s.vy*=-1; }
 
-if(s.z>-1){ s.z=-1; s.vz*=-1; }
+// bouncing in z direction
+if(s.z>0){ s.z=0; s.vz*=-1; }
 if(s.z<-5){ s.z=-5; s.vz*=-1; }
 
  const o=i*8;
