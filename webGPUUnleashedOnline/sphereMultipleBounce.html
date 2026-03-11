@@ -272,7 +272,6 @@
                 }
 
                 // 3. Fill the instance buffer
-                const iD = new Float32Array(SPHERE_COUNT * 8);
                 spheres.forEach((s, i) => {
                     iD.set([s.x, s.y, s.z, s.size, s.r, s.g, s.b, 0], i * 8);
                 });
