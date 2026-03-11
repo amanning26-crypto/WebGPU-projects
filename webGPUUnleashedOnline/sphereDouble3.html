@@ -127,6 +127,12 @@
       const shader = device.createShaderModule({
         code: `
 
+struct Camera {
+  viewProj: mat4x4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> camera : Camera;
+  
 struct VSOut{
  @builtin(position) pos:vec4f,
  @location(0) normal:vec3f,
@@ -159,7 +165,9 @@ fn vs(
   vec4f(0,0,-0.101,0)
  );
 
- out.pos = proj * vec4f(p,1);
+ // out.pos = proj * vec4f(p,1);
+ // Multiply by the uniform matrix instead of hardcoded values
+  out.pos = camera.viewProj * vec4f(p, 1.0); 
 
  out.normal = normal;
  out.color = instColor;
@@ -239,6 +247,7 @@ fn fs(in:VSOut)->@location(0) vec4f{
       const SPHERE_COUNT = 10;
       const BOUNDS = 3;
       const VELOCITY = 0.05;
+      let cameraZ = 5.0; // Your "back up" variable (adjust with wheel)
 
       const spheres = [];
 
@@ -269,7 +278,19 @@ fn fs(in:VSOut)->@location(0) vec4f{
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
       });
 
+      // allow control of the camera view
+      const cameraBuffer = device.createBuffer({
+        size: 64, // 16 floats * 4 bytes
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
 
+      const cameraBindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{
+          binding: 0,
+          resource: { buffer: cameraBuffer }
+        }]
+      });
 
       function frame() {
 
@@ -307,6 +328,13 @@ fn fs(in:VSOut)->@location(0) vec4f{
 
         device.queue.writeBuffer(instanceBuffer, 0, instanceData);
 
+        // 1. Calculate View-Projection Matrix (simplified)
+        const viewProj = perspective(1.0, canvas.width / canvas.height, 0.1, 100);
+        // Shift everything by cameraZ (this "backs up" the camera)
+        viewProj[14] -= cameraZ;
+        // 2. Upload to GPU
+        device.queue.writeBuffer(cameraBuffer, 0, new Float32Array(viewProj));
+
         const encoder = device.createCommandEncoder();
 
         const pass = encoder.beginRenderPass({
@@ -335,6 +363,9 @@ fn fs(in:VSOut)->@location(0) vec4f{
 
         pass.setIndexBuffer(indBuf, "uint32");
 
+        // 3. Set the Bind Group before drawing
+        pass.setBindGroup(0, cameraBindGroup);
+
         pass.drawIndexed(sphere.ind.length, SPHERE_COUNT);
 
         pass.end();
@@ -343,6 +374,21 @@ fn fs(in:VSOut)->@location(0) vec4f{
 
         requestAnimationFrame(frame);
       }
+
+
+      // move camera back with mouse wheel
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault(); // Stop the page from scrolling
+
+        // Adjust sensitivity (deltaY is usually ~100 per notch)
+        const sensitivity = 0.01;
+        cameraZ += e.deltaY * sensitivity;
+
+        // Optional: Clamp the zoom so you don't go "inside" the objects
+        cameraZ = Math.max(1.0, Math.min(cameraZ, 50.0));
+      }, { passive: false });
+
+
 
       frame();
     }
