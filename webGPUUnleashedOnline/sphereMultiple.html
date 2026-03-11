@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU Spheres Zoom</title>
+  <style>
+    body { margin: 0; background: #777; overflow: hidden; }
+    canvas { width: 100vw; height: 100vh; display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script type="module">
+    const canvas = document.querySelector("#c");
+
+    async function init() {
+      if (!navigator.gpu) {
+        document.body.innerHTML = "WebGPU not supported";
+        return;
+      }
+
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const context = canvas.getContext("webgpu");
+      const format = navigator.gpu.getPreferredCanvasFormat();
+
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      context.configure({ device, format, alphaMode: "opaque" });
+
+      const depthTexture = device.createTexture({
+        size: [canvas.width, canvas.height],
+        format: "depth24plus",
+        usage: GPUTextureUsage.RENDER_ATTACHMENT
+      });
+
+      // Updated perspective function to handle Z-translation (camera backup)
+      function getProjectionMatrix(fov, aspect, near, far, zOffset) {
+        const f = 1 / Math.tan(fov / 2);
+        const nf = 1 / (near - far);
+        return new Float32Array([
+          f / aspect, 0, 0, 0,
+          0, f, 0, 0,
+          0, 0, (far + near) * nf, -1,
+          0, 0, (2 * far * near) * nf + (zOffset * ((far + near) * nf)), -zOffset
+        ]);
+        /* 
+           Simpler approach: We just keep the matrix standard 
+           and handle the "back up" by shifting the objects in the shader 
+           OR by using a proper View Matrix. Let's use a standard View-Proj logic.
+        */
+      }
+
+      // Standard Perspective
+      function perspective(fov, aspect, near, far) {
+        const f = 1.0 / Math.tan(fov / 2);
+        const nf = 1 / (near - far);
+        return [
+          f / aspect, 0, 0, 0,
+          0, f, 0, 0,
+          0, 0, far * nf, -1,
+          0, 0, near * far * nf, 0
+        ];
+      }
+
+      function createSphere(r, lat, lon) {
+        let p = [], n = [], i = [];
+        for (let y = 0; y <= lat; y++) {
+          let v = y / lat;
+          let th = v * Math.PI;
+          for (let x = 0; x <= lon; x++) {
+            let u = x / lon;
+            let ph = u * Math.PI * 2;
+            let sx = Math.sin(th) * Math.cos(ph);
+            let sy = Math.cos(th);
+            let sz = Math.sin(th) * Math.sin(ph);
+            p.push(r * sx, r * sy, r * sz);
+            n.push(sx, sy, sz);
+          }
+        }
+        for (let y = 0; y < lat; y++) {
+          for (let x = 0; x < lon; x++) {
+            let a = y * (lon + 1) + x;
+            let b = a + lon + 1;
+            i.push(a, b, a + 1);
+            i.push(b, b + 1, a + 1);
+          }
+        }
+        return { pos: new Float32Array(p), norm: new Float32Array(n), ind: new Uint32Array(i) };
+      }
+
+      const sphere = createSphere(0.7, 32, 32);
+      const posBuf = device.createBuffer({ size: sphere.pos.byteLength, usage: GPUBufferUsage.VERTEX, mappedAtCreation: true });
+      new Float32Array(posBuf.getMappedRange()).set(sphere.pos);
+      posBuf.unmap();
+
+      const normBuf = device.createBuffer({ size: sphere.norm.byteLength, usage: GPUBufferUsage.VERTEX, mappedAtCreation: true });
+      new Float32Array(normBuf.getMappedRange()).set(sphere.norm);
+      normBuf.unmap();
+
+      const indBuf = device.createBuffer({ size: sphere.ind.byteLength, usage: GPUBufferUsage.INDEX, mappedAtCreation: true });
+      new Uint32Array(indBuf.getMappedRange()).set(sphere.ind);
+      indBuf.unmap();
+
+      const shader = device.createShaderModule({
+        code: `
+          struct Camera { viewProj: mat4x4f };
+          @group(0) @binding(0) var<uniform> camera : Camera;
+          struct VSOut { @builtin(position) pos: vec4f, @location(0) normal: vec3f, @location(1) color: vec3f, @location(2) world: vec3f };
+          @vertex
+          fn vs(@location(0) pos: vec3f, @location(1) normal: vec3f, @location(2) instPos: vec3f, @location(3) instSize: f32, @location(4) instColor: vec3f) -> VSOut {
+            var out: VSOut;
+            let p = pos * instSize + instPos;
+            out.pos = camera.viewProj * vec4f(p, 1.0);
+            out.normal = normal;
+            out.color = instColor;
+            out.world = p;
+            return out;
+          }
+          @fragment
+          fn fs(in: VSOut) -> @location(0) vec4f {
+            let light = normalize(vec3f(1, 1, 1));
+            let diff = max(dot(in.normal, light), 0.2);
+            return vec4f(in.color * diff, 1.0);
+          }
+        `
+      });
+
+      const pipeline = device.createRenderPipeline({
+        layout: "auto",
+        vertex: {
+          module: shader,
+          entryPoint: "vs",
+          buffers: [
+            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+            { arrayStride: 32, stepMode: "instance", attributes: [
+              { shaderLocation: 2, offset: 0, format: "float32x3" },
+              { shaderLocation: 3, offset: 12, format: "float32" },
+              { shaderLocation: 4, offset: 16, format: "float32x3" }
+            ]}
+          ]
+        },
+        fragment: { module: shader, entryPoint: "fs", targets: [{ format }] },
+        primitive: { topology: "triangle-list", cullMode: "back" },
+        depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
+      });
+
+      const SPHERE_COUNT = 15;
+      const spheres = Array.from({ length: SPHERE_COUNT }, () => ({
+        x: (Math.random() - 0.5) * 5,
+        y: (Math.random() - 0.5) * 5,
+        z: -Math.random() * 5,
+        vx: (Math.random() - 0.5) * 0.02,
+        vy: (Math.random() - 0.5) * 0.02,
+        vz: (Math.random() - 0.5) * 0.02,
+        size: 0.5,
+        r: Math.random(), g: Math.random(), b: Math.random()
+      }));
+
+      const instanceBuffer = device.createBuffer({ size: SPHERE_COUNT * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      const cameraBuffer = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const cameraBindGroup = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: cameraBuffer } }] });
+
+      let cameraZ = 5.0;
+      window.addEventListener('wheel', (e) => {
+        cameraZ += e.deltaY * 0.01;
+        cameraZ = Math.max(1, cameraZ);
+      }, { passive: true });
+
+      function frame() {
+        const instanceData = new Float32Array(SPHERE_COUNT * 8);
+        spheres.forEach((s, i) => {
+          s.x += s.vx; s.y += s.vy; s.z += s.vz;
+          if (Math.abs(s.x) > 4) s.vx *= -1;
+          if (Math.abs(s.y) > 4) s.vy *= -1;
+          if (s.z > 0 || s.z < -10) s.vz *= -1;
+          instanceData.set([s.x, s.y, s.z, s.size, s.r, s.g, s.b, 0], i * 8);
+        });
+        device.queue.writeBuffer(instanceBuffer, 0, instanceData);
+
+        // Calculate Matrix: Projection * View
+        const proj = perspective(1.0, canvas.width / canvas.height, 0.1, 100);
+        const viewProj = new Float32Array(proj);
+        // Translation in the viewProj matrix (the simple way)
+        viewProj[14] -= cameraZ * viewProj[10]; 
+        viewProj[15] += cameraZ; // This handles the W component shift for camera distance
+
+        device.queue.writeBuffer(cameraBuffer, 0, viewProj);
+
+        const encoder = device.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.2, 0.2, 0.2, 1], loadOp: "clear", storeOp: "store" }],
+          depthStencilAttachment: { view: depthTexture.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" }
+        });
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, cameraBindGroup);
+        pass.setVertexBuffer(0, posBuf);
+        pass.setVertexBuffer(1, normBuf);
+        pass.setVertexBuffer(2, instanceBuffer);
+        pass.setIndexBuffer(indBuf, "uint32");
+        pass.drawIndexed(sphere.ind.length, SPHERE_COUNT);
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        requestAnimationFrame(frame);
+      }
+      frame();
+    }
+    init();
+  </script>
+</body>
+</html>
