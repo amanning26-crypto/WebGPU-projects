@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU Spheres: Orbit & Zoom</title>
+  <style>
+    body { margin: 0; background: #222; overflow: hidden; }
+    canvas { width: 100vw; height: 100vh; display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script type="module">
+    const canvas = document.querySelector("#c");
+
+    // --- 3D Math Helpers (Inline gl-matrix equivalent) ---
+    const vec3 = {
+      sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+      normalize: (v) => {
+        const l = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+        return l > 0 ? [v[0]/l, v[1]/l, v[2]/l] : [0,0,0];
+      },
+      cross: (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+      dot: (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+    };
+
+    function mat4_lookAt(eye, target, up) {
+      const z = vec3.normalize(vec3.sub(eye, target));
+      const x = vec3.normalize(vec3.cross(up, z));
+      const y = vec3.cross(z, x);
+      return new Float32Array([
+        x[0], y[0], z[0], 0,
+        x[1], y[1], z[1], 0,
+        x[2], y[2], z[2], 0,
+        -vec3.dot(x, eye), -vec3.dot(y, eye), -vec3.dot(z, eye), 1
+      ]);
+    }
+
+    function mat4_perspective(fov, aspect, near, far) {
+      const f = 1.0 / Math.tan(fov / 2);
+      const nf = 1 / (near - far);
+      return new Float32Array([f/aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far+near)*nf, -1, 0, 0, (2*far*near)*nf, 0]);
+    }
+
+    function mat4_multiply(a, b) {
+      const out = new Float32Array(16);
+      for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+          out[i*4+j] = a[i*4+0]*b[j] + a[i*4+1]*b[4+j] + a[i*4+2]*b[8+j] + a[i*4+3]*b[12+j];
+        }
+      }
+      return out;
+    }
+
+    async function init() {
+      if (!navigator.gpu) return;
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const context = canvas.getContext("webgpu");
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+      context.configure({ device, format, alphaMode: "opaque" });
+
+      // --- Shaders ---
+      const shader = device.createShaderModule({
+        code: `
+          struct Cam { vp: mat4x4f };
+          @group(0) @binding(0) var<uniform> camera : Cam;
+          struct VSOut { @builtin(position) pos: vec4f, @location(0) norm: vec3f, @location(1) col: vec3f };
+          @vertex
+          fn vs(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) iP: vec3f, @location(3) iS: f32, @location(4) iC: vec3f) -> VSOut {
+            var o: VSOut;
+            o.pos = camera.vp * vec4f(p * iS + iP, 1.0);
+            o.norm = n; o.col = iC;
+            return o;
+          }
+          @fragment
+          fn fs(in: VSOut) -> @location(0) vec4f {
+            let d = max(dot(in.norm, normalize(vec3f(1, 1, 1))), 0.2);
+            return vec4f(in.col * d, 1.0);
+          }
+        `
+      });
+
+      // --- Geometry & Pipeline ---
+      function createSphere(r, lat, lon) {
+        let p = [], n = [], i = [];
+        for (let y = 0; y <= lat; y++) {
+          let v = y / lat, th = v * Math.PI;
+          for (let x = 0; x <= lon; x++) {
+            let u = x / lon, ph = u * Math.PI * 2;
+            let sx = Math.sin(th) * Math.cos(ph), sy = Math.cos(th), sz = Math.sin(th) * Math.sin(ph);
+            p.push(r * sx, r * sy, r * sz); n.push(sx, sy, sz);
+          }
+        }
+        for (let y = 0; y < lat; y++) {
+          for (let x = 0; x < lon; x++) {
+            let a = y * (lon + 1) + x, b = a + lon + 1;
+            i.push(a, b, a + 1, b, b + 1, a + 1);
+          }
+        }
+        return { pos: new Float32Array(p), norm: new Float32Array(n), ind: new Uint32Array(i) };
+      }
+
+      const sData = createSphere(0.7, 24, 24);
+      const mkBuf = (d, u) => {
+        const b = device.createBuffer({ size: d.byteLength, usage: u, mappedAtCreation: true });
+        new d.constructor(b.getMappedRange()).set(d); b.unmap(); return b;
+      };
+      const pB = mkBuf(sData.pos, GPUBufferUsage.VERTEX);
+      const nB = mkBuf(sData.norm, GPUBufferUsage.VERTEX);
+      const iB = mkBuf(sData.ind, GPUBufferUsage.INDEX);
+
+      const pipeline = device.createRenderPipeline({
+        layout: "auto",
+        vertex: { module: shader, entryPoint: "vs", buffers: [
+          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+          { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+          { arrayStride: 32, stepMode: "instance", attributes: [
+            { shaderLocation: 2, offset: 0, format: "float32x3" },
+            { shaderLocation: 3, offset: 12, format: "float32" },
+            { shaderLocation: 4, offset: 16, format: "float32x3" }
+          ]}
+        ]},
+        fragment: { module: shader, entryPoint: "fs", targets: [{ format }] },
+        primitive: { topology: "triangle-list", cullMode: "back" },
+        depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
+      });
+
+      // --- Scene State ---
+      const SPHERE_COUNT = 20;
+      const spheres = Array.from({ length: SPHERE_COUNT }, () => ({
+        x: (Math.random()-0.5)*6, y: (Math.random()-0.5)*6, z: (Math.random()-0.5)*6 - 3,
+        vx: (Math.random()-0.5)*0.04, vy: (Math.random()-0.5)*0.04, vz: (Math.random()-0.5)*0.04,
+        size: 0.4, r: Math.random(), g: Math.random(), b: Math.random()
+      }));
+
+      const instB = device.createBuffer({ size: SPHERE_COUNT * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      const camB = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const camBG = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: camB } }] });
+      const dT = device.createTexture({ size: [canvas.width, canvas.height], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+
+      // --- Controls ---
+      let zoom = 12, yaw = 0, pitch = 0.3, isR = false, lX = 0, lY = 0;
+      canvas.addEventListener('wheel', e => { zoom = Math.max(3, Math.min(30, zoom + e.deltaY * 0.01)); }, { passive: true });
+      canvas.addEventListener('mousedown', e => { if (e.button === 2) { isR = true; lX = e.clientX; lY = e.clientY; } });
+      window.addEventListener('mouseup', e => { if (e.button === 2) isR = false; });
+      window.addEventListener('mousemove', e => {
+        if (isR) {
+          yaw -= (e.clientX - lX) * 0.007; pitch = Math.max(-1.5, Math.min(1.5, pitch + (e.clientY - lY) * 0.007));
+          lX = e.clientX; lY = e.clientY;
+        }
+      });
+      canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+      function frame() {
+        // Update Spheres
+        const iD = new Float32Array(SPHERE_COUNT * 8);
+        spheres.forEach((s, i) => {
+          s.x += s.vx; s.y += s.vy; s.z += s.vz;
+          if (Math.abs(s.x) > 4) s.vx *= -1; if (Math.abs(s.y) > 4) s.vy *= -1; if (s.z > 0 || s.z < -6) s.vz *= -1;
+          iD.set([s.x, s.y, s.z, s.size, s.r, s.g, s.b, 0], i * 8);
+        });
+        device.queue.writeBuffer(instB, 0, iD);
+
+        // Update Camera Matrix
+        const target = [0, 0, -3];
+        const eye = [
+          target[0] + Math.sin(yaw) * Math.cos(pitch) * zoom,
+          target[1] + Math.sin(pitch) * zoom,
+          target[2] + Math.cos(yaw) * Math.cos(pitch) * zoom
+        ];
+        const vM = mat4_lookAt(eye, target, [0, 1, 0]);
+        const pM = mat4_perspective(1.0, canvas.width / canvas.height, 0.1, 100);
+        device.queue.writeBuffer(camB, 0, mat4_multiply(pM, vM));
+
+        // Render
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginRenderPass({
+          colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.1, 0.1, 0.1, 1], loadOp: "clear", storeOp: "store" }],
+          depthStencilAttachment: { view: dT.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" }
+        });
+        pass.setPipeline(pipeline); pass.setBindGroup(0, camBG);
+        pass.setVertexBuffer(0, pB); pass.setVertexBuffer(1, nB); pass.setVertexBuffer(2, instB);
+        pass.setIndexBuffer(iB, "uint32"); pass.drawIndexed(sData.ind.length, SPHERE_COUNT);
+        pass.end(); device.queue.submit([enc.finish()]);
+        requestAnimationFrame(frame);
+      }
+      frame();
+    }
+    init();
+  </script>
+</body>
+</html>
