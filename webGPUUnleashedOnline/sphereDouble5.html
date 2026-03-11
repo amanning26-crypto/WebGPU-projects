@@ -328,12 +328,18 @@ fn fs(in:VSOut)->@location(0) vec4f{
 
         device.queue.writeBuffer(instanceBuffer, 0, instanceData);
 
-        // 1. Calculate View-Projection Matrix (simplified)
-        const viewProj = perspective(1.0, canvas.width / canvas.height, 0.1, 100);
-        // Shift everything by cameraZ (this "backs up" the camera)
-        viewProj[14] -= cameraZ;
-        // 2. Upload to GPU
-        device.queue.writeBuffer(cameraBuffer, 0, new Float32Array(viewProj));
+
+        // 1. Generate the base projection matrix
+        const aspect = canvas.width / canvas.height;
+        const projection = perspective(1.0, aspect, 0.1, 100);
+
+        // 2. To "Back up", we modify the Z translation (index 14 in a 4x4 matrix)
+        // We subtract cameraZ because in this coordinate system, -Z is forward.
+        projection[14] -= cameraZ;
+
+        // 3. Upload to GPU
+        device.queue.writeBuffer(cameraBuffer, 0, new Float32Array(projection));
+
 
         const encoder = device.createCommandEncoder();
 
@@ -357,14 +363,15 @@ fn fs(in:VSOut)->@location(0) vec4f{
 
         pass.setPipeline(pipeline);
 
+        // IMPORTANT: You must set the Bind Group here!
+        pass.setBindGroup(0, cameraBindGroup);
+
         pass.setVertexBuffer(0, posBuf);
         pass.setVertexBuffer(1, normBuf);
         pass.setVertexBuffer(2, instanceBuffer);
 
         pass.setIndexBuffer(indBuf, "uint32");
 
-        // 3. Set the Bind Group before drawing
-        pass.setBindGroup(0, cameraBindGroup);
 
         pass.drawIndexed(sphere.ind.length, SPHERE_COUNT);
 
