@@ -140,7 +140,7 @@
             canvas.width = window.innerWidth; canvas.height = window.innerHeight;
             context.configure({ device, format, alphaMode: "opaque" });
 
- 
+
 
             const shader = device.createShaderModule({
                 code: `
@@ -202,11 +202,11 @@ fn fs_box() -> @location(0) vec4f {
             const pB = mkB(sData.pos, GPUBufferUsage.VERTEX);
             const nB = mkB(sData.norm, GPUBufferUsage.VERTEX);
             const iB = mkB(sData.ind, GPUBufferUsage.INDEX);
-                       // Inside init():
+            // Inside init():
             const boxData = createBox(5.0); // Match your 'b' boundary
             const boxPosBuf = mkB(boxData.pos, GPUBufferUsage.VERTEX);
             const boxIndBuf = mkB(boxData.ind, GPUBufferUsage.INDEX);
-            
+
             const camBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
             const pipeline = device.createRenderPipeline({
@@ -227,6 +227,27 @@ fn fs_box() -> @location(0) vec4f {
                 fragment: { module: shader, entryPoint: "fs", targets: [{ format }] },
                 primitive: { topology: "triangle-list", cullMode: "back" },
                 depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
+            });
+
+
+
+            const boxPipeline = device.createRenderPipeline({
+                layout: "auto",
+                vertex: { module: shader, entryPoint: "vs_box" }, // We'll add this entry point
+                fragment: {
+                    module: shader,
+                    entryPoint: "fs_box",
+                    targets: [{
+                        format,
+                        blend: {
+                            color: { operation: "add", srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+                            alpha: { operation: "add", srcFactor: "one", dstFactor: "one" }
+                        }
+                    }]
+                },
+                primitive: { topology: "triangle-list" },
+                depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "less" }
+                // depthWriteEnabled: false prevents the box from hiding spheres inside
             });
 
             const camBG = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: camBuf } }] });
