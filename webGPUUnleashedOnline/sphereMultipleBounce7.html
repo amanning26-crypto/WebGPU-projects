@@ -542,11 +542,11 @@
               let n = vec3.normalize(dV);
               let sepV = vec3.dot(vec3.sub(s2.v, s.v), n);
               if (sepV > 0) continue;
-              let impS = -1.8 * sepV / (1 / s.mass + 1 / s2.mass);
+              let impS = -2.0 * sepV / (1 / s.mass + 1 / s2.mass); // restitution
               let imp = vec3.mul(n, impS);
               s.v = vec3.sub(s.v, vec3.mul(imp, 1 / s.mass)); 
               s2.v = vec3.add(s2.v, vec3.mul(imp, 1 / s2.mass));
-              let c = vec3.mul(n, (minD - dist) * 0.5); 
+              let c = vec3.mul(n, (minD - dist) * 0.1); // pos correction
               s.p = vec3.sub(s.p, c); 
               s2.p = vec3.add(s2.p, c);
             }
