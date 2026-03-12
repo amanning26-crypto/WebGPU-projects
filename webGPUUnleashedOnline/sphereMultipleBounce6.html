@@ -209,8 +209,8 @@
         `
       });
 
-      // --- Textures ---
-      const texSize = 128;
+      // --- High Contrast Textures ---
+      const texSize = 256;
       const layers = 10;
       const textureArray = device.createTexture({ 
         size: [texSize, texSize, layers], 
@@ -226,10 +226,11 @@
         for (let j = 0; j < data.length; j += 4) {
           const x = (j / 4) % texSize;
           const y = Math.floor((j / 4) / texSize);
-          data[j] = r;
-          data[j+1] = g;
-          data[j+2] = b;
-          data[j+3] = (x % 32 < 6 || y % 32 < 6) ? 120 : 255;
+          const isGrid = (x % 32 < 4 || y % 32 < 4);
+          data[j] = isGrid ? 255 : r;
+          data[j+1] = isGrid ? 255 : g;
+          data[j+2] = isGrid ? 255 : b;
+          data[j+3] = 255;
         }
         device.queue.writeTexture(
           { texture: textureArray, origin: [0, 0, i] }, 
@@ -284,17 +285,15 @@
           -s,-s,-s,  s,-s,-s,  s, s,-s, -s, s,-s
         ]);
         const faces = new Uint16Array([
-          0, 1, 2, 0, 2, 3, 5, 4, 7, 5, 7, 6,
-          4, 0, 3, 4, 3, 7, 1, 5, 6, 1, 6, 2,
-          3, 2, 6, 3, 6, 7, 4, 5, 1, 4, 1, 0
+          0,1,2, 0,2,3, 4,5,6, 4,6,7, 4,0,3, 4,3,7, 1,5,6, 1,6,2, 3,2,6, 3,6,7, 4,5,1, 4,1,0
         ]);
         const edges = new Uint16Array([
-          0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7
+          0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7
         ]);
         return { pos: p, faces, edges };
       }
 
-      const sData = createSphere(1.0, 24, 24);
+      const sData = createSphere(1.0, 32, 32);
       const bData = createBox(5.0);
       const mkB = (d, u) => { 
         let b = device.createBuffer({ 
@@ -352,7 +351,7 @@
           entryPoint: "fs_sphere", 
           targets: [{ format }] 
         },
-        primitive: { topology: "triangle-list", cullMode: "none" },
+        primitive: { topology: "triangle-list", cullMode: "back" },
         depthStencil: { 
           format: "depth24plus", 
           depthWriteEnabled: true, 
@@ -475,7 +474,7 @@
         spheres.forEach((s, i) => {
           s.v = vec3.mul(s.v, fric);
           s.p = vec3.add(s.p, vec3.mul(s.v, speed));
-          s.roll += Math.sqrt(s.v[0] ** 2 + s.v[1] ** 2 + s.v[2] ** 2) * speed;
+          s.roll += Math.sqrt(s.v[0]**2 + s.v[1]**2 + s.v[2]**2) * speed;
 
           [0, 1, 2].forEach(a => {
             let limit;
