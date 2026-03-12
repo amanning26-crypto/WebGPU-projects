@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>WebGPU: Physics Lab with Glass Box</title>
+  <title>WebGPU: Fixed Physics Lab</title>
   <style>
     body { margin: 0; background: #111; overflow: hidden; font-family: sans-serif; }
     canvas { width: 100vw; height: 100vh; display: block; }
@@ -13,40 +13,27 @@
       border: 1px solid #444; z-index: 10;
     }
     .row { margin-bottom: 15px; display: flex; flex-direction: column; }
-    label { font-size: 11px; margin-bottom: 5px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+    label { font-size: 11px; margin-bottom: 5px; color: #888; text-transform: uppercase; }
     input[type=range] { cursor: pointer; accent-color: #0f0; }
     button { 
       background: #0f0; color: #000; border: none; padding: 10px; 
       cursor: pointer; border-radius: 4px; font-weight: bold; width: 100%;
     }
-    button:hover { background: #0c0; }
     .val { float: right; color: #0f0; font-weight: bold; }
-    .inst { font-size: 10px; color: #666; margin-top: 15px; line-height: 1.4; }
   </style>
 </head>
 <body>
   <div id="ui">
-    <div class="row">
-      <label>Spheres <span id="cntV" class="val">40</span></label>
-      <input type="range" id="cntI" min="5" max="100" value="40">
-    </div>
-    <div class="row">
-      <label>Initial Kick <span id="velV" class="val">1.0</span></label>
-      <input type="range" id="velI" min="0" max="300" value="100">
-    </div>
-    <div class="row">
-      <label>Friction <span id="fricV" class="val">0%</span></label>
-      <input type="range" id="fricI" min="950" max="1000" value="1000">
-    </div>
-    <button id="resetBtn">RESTART SIMULATION</button>
-    <div class="inst">RIGHT-CLICK: Rotate View<br>WHEEL: Zoom In/Out</div>
+    <div class="row"><label>Spheres <span id="cntV" class="val">40</span></label><input type="range" id="cntI" min="5" max="100" value="40"></div>
+    <div class="row"><label>Speed <span id="velV" class="val">1.0</span></label><input type="range" id="velI" min="0" max="300" value="100"></div>
+    <div class="row"><label>Friction <span id="fricV" class="val">0%</span></label><input type="range" id="fricI" min="950" max="1000" value="1000"></div>
+    <button id="resetBtn">RESTART</button>
   </div>
   <canvas id="c"></canvas>
 
   <script type="module">
     const canvas = document.querySelector("#c");
     
-    // --- Vector & Matrix Helpers ---
     const vec3 = {
       sub: (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
       add: (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]],
@@ -109,12 +96,17 @@
 
           @fragment
           fn fs_box() -> @location(0) vec4f {
-            return vec4f(0.0, 0.8, 1.0, 0.15); // Transparent Cyan
+            return vec4f(0.0, 0.8, 1.0, 0.1);
           }
         `
       });
 
-      // --- Buffers ---
+      // Explicitly define the Bind Group Layout for shared use
+      const bindGroupLayout = device.createBindGroupLayout({
+        entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } }]
+      });
+      const sharedLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+
       function createSphere(r, lat, lon) {
         let p=[], n=[], i=[];
         for(let y=0; y<=lat; y++) {
@@ -133,7 +125,7 @@
 
       function createBox(s) {
         const p = new Float32Array([-s,-s,s, s,-s,s, s,s,s, -s,s,s, -s,-s,-s, -s,s,-s, s,s,-s, s,-s,-s]);
-        const i = new Uint16Array([0,1,2,0,2,3, 4,5,6,4,6,7, 0,3,5,0,5,4, 1,7,6,1,6,2, 3,2,6,3,6,5, 0,4,7,0,7,1]);
+        const i = new Uint16Array([0,1,2, 0,2,3, 4,5,6, 4,6,7, 4,0,3, 4,3,5, 1,7,6, 1,6,2, 3,2,6, 3,6,5, 4,7,1, 4,1,0]);
         return { pos: p, ind: i };
       }
 
@@ -144,23 +136,17 @@
         new d.constructor(b.getMappedRange()).set(d); b.unmap(); return b;
       };
 
-      const spPB = mkB(sData.pos, GPUBufferUsage.VERTEX);
-      const spNB = mkB(sData.norm, GPUBufferUsage.VERTEX);
-      const spIB = mkB(sData.ind, GPUBufferUsage.INDEX);
-      const bxPB = mkB(bData.pos, GPUBufferUsage.VERTEX);
-      const bxIB = mkB(bData.ind, GPUBufferUsage.INDEX);
+      const spPB = mkB(sData.pos, GPUBufferUsage.VERTEX), spNB = mkB(sData.norm, GPUBufferUsage.VERTEX), spIB = mkB(sData.ind, GPUBufferUsage.INDEX);
+      const bxPB = mkB(bData.pos, GPUBufferUsage.VERTEX), bxIB = mkB(bData.ind, GPUBufferUsage.INDEX);
       const camBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-      // --- Pipelines ---
       const spherePipe = device.createRenderPipeline({
-        layout: "auto",
+        layout: sharedLayout,
         vertex: { module: shader, entryPoint: "vs_sphere", buffers: [
           { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
           { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
           { arrayStride: 32, stepMode: "instance", attributes: [
-            { shaderLocation: 2, offset: 0, format: "float32x3" },
-            { shaderLocation: 3, offset: 12, format: "float32" },
-            { shaderLocation: 4, offset: 16, format: "float32x3" }
+            { shaderLocation: 2, offset: 0, format: "float32x3" }, { shaderLocation: 3, offset: 12, format: "float32" }, { shaderLocation: 4, offset: 16, format: "float32x3" }
           ]}
         ]},
         fragment: { module: shader, entryPoint: "fs_sphere", targets: [{ format }] },
@@ -169,7 +155,7 @@
       });
 
       const boxPipe = device.createRenderPipeline({
-        layout: "auto",
+        layout: sharedLayout,
         vertex: { module: shader, entryPoint: "vs_box", buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }] },
         fragment: { module: shader, entryPoint: "fs_box", targets: [{ format, blend: { 
           color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
@@ -179,9 +165,8 @@
         depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "less" }
       });
 
-      const camBG = device.createBindGroup({ layout: spherePipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: camBuf } }] });
+      const camBG = device.createBindGroup({ layout: bindGroupLayout, entries: [{ binding: 0, resource: { buffer: camBuf } }] });
 
-      // --- Sim Logic ---
       let spheres = [], instB = null, dT = null;
       let zoom = 18, yaw = 0, pitch = 0.3, isR = false, lX = 0, lY = 0;
 
@@ -189,15 +174,14 @@
         const count = parseInt(document.getElementById('cntI').value);
         const vScale = parseInt(document.getElementById('velI').value) / 1000;
         spheres = Array.from({ length: count }, () => {
-          let size = 0.3 + Math.random() * 0.6;
-          return { p: [(Math.random()-0.5)*8, (Math.random()-0.5)*8, (Math.random()-0.5)*8 - 3], v: [(Math.random()-0.5)*vScale, (Math.random()-0.5)*vScale, (Math.random()-0.5)*vScale], size, mass: size**3, c: [Math.random(), Math.random(), Math.random()] };
+          let s = 0.3 + Math.random() * 0.6;
+          return { p: [(Math.random()-0.5)*8, (Math.random()-0.5)*8, (Math.random()-0.5)*8-3], v: [(Math.random()-0.5)*vScale, (Math.random()-0.5)*vScale, (Math.random()-0.5)*vScale], size: s, mass: s**3, c: [Math.random(), Math.random(), Math.random()] };
         });
         if (instB) instB.destroy();
         instB = device.createBuffer({ size: count * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
         dT = device.createTexture({ size: [canvas.width, canvas.height], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
       }
 
-      // --- Interactions ---
       document.getElementById('cntI').oninput = e => document.getElementById('cntV').innerText = e.target.value;
       document.getElementById('velI').oninput = e => document.getElementById('velV').innerText = (e.target.value/100).toFixed(1);
       document.getElementById('fricI').oninput = e => document.getElementById('fricV').innerText = ((1000 - e.target.value)/10).toFixed(1) + "%";
@@ -212,18 +196,18 @@
         const fric = parseInt(document.getElementById('fricI').value) / 1000;
         spheres.forEach((s, i) => {
           s.v = vec3.mul(s.v, fric); s.p = vec3.add(s.p, s.v);
-          [0, 1, 2].forEach(a => { 
-            let b = (a === 2) ? (s.p[2] > 2 || s.p[2] < -8) : Math.abs(s.p[a]) > 5;
-            if(b) { s.v[a] *= -1; s.p[a] = (a===2) ? (s.p[2]>0?2:-8) : Math.sign(s.p[a])*5; } 
+          [0,1,2].forEach(a => { 
+            let b = (a === 2) ? (s.p[a] > 2 || s.p[a] < -8) : Math.abs(s.p[a]) > 5;
+            if(b) { s.v[a] *= -1; s.p[a] = (a===2) ? (s.p[a]>0?2:-8) : Math.sign(s.p[a])*5; } 
           });
           for(let j=i+1; j<spheres.length; j++) {
-            let s2 = spheres[j], dV = vec3.sub(s2.p, s.p), dist = Math.sqrt(vec3.dot(dV, dV)), minDist = s.size+s2.size;
-            if(dist < minDist) {
+            let s2 = spheres[j], dV = vec3.sub(s2.p, s.p), dist = Math.sqrt(vec3.dot(dV, dV)), minD = s.size+s2.size;
+            if(dist < minD) {
               let n = vec3.normalize(dV), sepV = vec3.dot(vec3.sub(s2.v, s.v), n);
               if(sepV > 0) continue;
               let imp = vec3.mul(n, -1.8 * sepV / (1/s.mass + 1/s2.mass));
               s.v = vec3.sub(s.v, vec3.mul(imp, 1/s.mass)); s2.v = vec3.add(s2.v, vec3.mul(imp, 1/s2.mass));
-              let c = vec3.mul(n, (minDist-dist)*0.5); s.p = vec3.sub(s.p, c); s2.p = vec3.add(s2.p, c);
+              let c = vec3.mul(n, (minD-dist)*0.5); s.p = vec3.sub(s.p, c); s2.p = vec3.add(s2.p, c);
             }
           }
         });
@@ -242,10 +226,8 @@
           depthStencilAttachment: { view: dT.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" }
         });
         pass.setBindGroup(0, camBG);
-        // Opaque Spheres
         pass.setPipeline(spherePipe); pass.setVertexBuffer(0, spPB); pass.setVertexBuffer(1, spNB); pass.setVertexBuffer(2, instB);
         pass.setIndexBuffer(spIB, "uint32"); pass.drawIndexed(sData.ind.length, spheres.length);
-        // Transparent Box
         pass.setPipeline(boxPipe); pass.setVertexBuffer(0, bxPB); pass.setIndexBuffer(bxIB, "uint16");
         pass.drawIndexed(bData.ind.length);
         pass.end(); device.queue.submit([enc.finish()]);
