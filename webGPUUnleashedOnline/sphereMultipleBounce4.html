@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>WebGPU: Physics Lab with Highlighted Edges</title>
+  <title>WebGPU: Physics Lab Final</title>
   <style>
     body { margin: 0; background: #111; overflow: hidden; font-family: sans-serif; }
     canvas { width: 100vw; height: 100vh; display: block; }
@@ -101,7 +101,7 @@
 
           @fragment
           fn fs_edges() -> @location(0) vec4f {
-            return vec4f(0.8, 0.8, 0.8, 1.0); // Light grey highlight
+            return vec4f(0.8, 0.8, 0.8, 1.0);
           }
         `
       });
@@ -129,16 +129,16 @@
 
       function createBox(s) {
         const p = new Float32Array([
-          -s,-s, s,  s,-s, s,  s, s, s, -s, s, s, // Front corners
-          -s,-s,-s,  s,-s,-s,  s, s,-s, -s, s,-s  // Back corners
+          -s,-s, s,  s,-s, s,  s, s, s, -s, s, s, // Front: 0,1,2,3
+          -s,-s,-s,  s,-s,-s,  s, s,-s, -s, s,-s  // Back: 4,5,6,7
         ]);
-        const i_faces = new Uint16Array([
-          0,1,2, 0,2,3, 4,5,6, 4,6,7, 0,3,5, 0,5,4, 1,7,6, 1,6,2, 3,2,6, 3,6,5, 0,1,7, 0,7,4
+        const f = new Uint16Array([
+          0,1,2, 0,2,3, 5,4,7, 5,7,6, 4,0,3, 4,3,7, 1,5,6, 1,6,2, 3,2,6, 3,6,7, 4,5,1, 4,1,0
         ]);
-        const i_edges = new Uint16Array([
-          0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,7, 2,6, 3,5
+        const e = new Uint16Array([
+          0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7
         ]);
-        return { pos: p, faces: i_faces, edges: i_edges };
+        return { pos: p, faces: f, edges: e };
       }
 
       const sData = createSphere(1.0, 20, 20);
@@ -169,7 +169,10 @@
       const boxPipe = device.createRenderPipeline({
         layout: sharedLayout,
         vertex: { module: shader, entryPoint: "vs_box", buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }] },
-        fragment: { module: shader, entryPoint: "fs_box", targets: [{ format, blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" }, alpha: { srcFactor: "one", dstFactor: "one", operation: "add" } }}]},
+        fragment: { module: shader, entryPoint: "fs_box", targets: [{ format, blend: { 
+          color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+          alpha: { srcFactor: "one", dstFactor: "one", operation: "add" }
+        }}]},
         primitive: { topology: "triangle-list" },
         depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "less" }
       });
@@ -199,7 +202,11 @@
         dT = device.createTexture({ size: [canvas.width, canvas.height], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
       }
 
+      document.getElementById('cntI').oninput = e => document.getElementById('cntV').innerText = e.target.value;
+      document.getElementById('velI').oninput = e => document.getElementById('velV').innerText = (e.target.value/100).toFixed(1);
+      document.getElementById('fricI').oninput = e => document.getElementById('fricV').innerText = ((1000 - e.target.value)/10).toFixed(1) + "%";
       document.getElementById('resetBtn').onclick = resetSim;
+
       canvas.onmousedown = e => { if (e.button === 2) { isR = true; lX = e.clientX; lY = e.clientY; } };
       window.onmouseup = e => { if (e.button === 2) isR = false; };
       window.onmousemove = e => { if (isR) { yaw -= (e.clientX-lX)*0.005; pitch = Math.max(-1.5, Math.min(1.5, pitch+(e.clientY-lY)*0.005)); lX=e.clientX; lY=e.clientY; } };
@@ -208,20 +215,26 @@
 
       function frame() {
         const fric = parseInt(document.getElementById('fricI').value) / 1000;
+        
         spheres.forEach((s, i) => {
-          s.v = vec3.mul(s.v, fric); s.p = vec3.add(s.p, s.v);
+          s.v = vec3.mul(s.v, fric);
+          s.p = vec3.add(s.p, s.v);
+
           [0,1,2].forEach(a => { 
             let b = (a === 2) ? (s.p[a] > 2 || s.p[a] < -8) : Math.abs(s.p[a]) > 5;
-            if(b) { s.v[a] *= -1; s.p[a] = (a===2) ? (s.p[a]>0?2:-8) : Math.sign(s.p[a])*5; } 
+            if(b) { s.v[a] *= -1.0; s.p[a] = (a===2) ? (s.p[a]>0?2:-8) : Math.sign(s.p[a])*5.0; } 
           });
+
           for(let j=i+1; j<spheres.length; j++) {
             let s2 = spheres[j], dV = vec3.sub(s2.p, s.p), dist = Math.sqrt(vec3.dot(dV, dV)), minD = s.size+s2.size;
             if(dist < minD) {
               let n = vec3.normalize(dV), sepV = vec3.dot(vec3.sub(s2.v, s.v), n);
               if(sepV > 0) continue;
               let imp = vec3.mul(n, -1.8 * sepV / (1/s.mass + 1/s2.mass));
-              s.v = vec3.sub(s.v, vec3.mul(imp, 1/s.mass)); s2.v = vec3.add(s2.v, vec3.mul(imp, 1/s2.mass));
-              let c = vec3.mul(n, (minD-dist)*0.5); s.p = vec3.sub(s.p, c); s2.p = vec3.add(s2.p, c);
+              s.v = vec3.sub(s.v, vec3.mul(imp, 1/s.mass));
+              s2.v = vec3.add(s2.v, vec3.mul(imp, 1/s2.mass));
+              let c = vec3.mul(n, (minD-dist)*0.5);
+              s.p = vec3.sub(s.p, c); s2.p = vec3.add(s2.p, c);
             }
           }
         });
@@ -239,14 +252,19 @@
           colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.05, 0.05, 0.05, 1], loadOp: "clear", storeOp: "store" }],
           depthStencilAttachment: { view: dT.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" }
         });
+        
         pass.setBindGroup(0, camBG);
+        
+        // Pass 1: Spheres
         pass.setPipeline(spherePipe); pass.setVertexBuffer(0, spPB); pass.setVertexBuffer(1, spNB); pass.setVertexBuffer(2, instB);
         pass.setIndexBuffer(spIB, "uint32"); pass.drawIndexed(sData.ind.length, spheres.length);
         
+        // Pass 2: Box Faces
         pass.setPipeline(boxPipe); pass.setVertexBuffer(0, bxPB); pass.setIndexBuffer(bxFIB, "uint16");
         pass.drawIndexed(bData.faces.length);
         
-        pass.setPipeline(edgePipe); pass.setVertexBuffer(0, bxPB); pass.setIndexBuffer(bxEIB, "uint16");
+        // Pass 3: Highlight Edges
+        pass.setPipeline(edgePipe); pass.setIndexBuffer(bxEIB, "uint16");
         pass.drawIndexed(bData.edges.length);
 
         pass.end(); device.queue.submit([enc.finish()]);
