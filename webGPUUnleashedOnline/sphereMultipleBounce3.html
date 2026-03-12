@@ -140,10 +140,7 @@
             canvas.width = window.innerWidth; canvas.height = window.innerHeight;
             context.configure({ device, format, alphaMode: "opaque" });
 
-            // Inside init():
-            const boxData = createBox(5.0); // Match your 'b' boundary
-            const boxPosBuf = mkB(boxData.pos, GPUBufferUsage.VERTEX);
-            const boxIndBuf = mkB(boxData.ind, GPUBufferUsage.INDEX);
+ 
 
             const shader = device.createShaderModule({
                 code: `
@@ -205,6 +202,11 @@ fn fs_box() -> @location(0) vec4f {
             const pB = mkB(sData.pos, GPUBufferUsage.VERTEX);
             const nB = mkB(sData.norm, GPUBufferUsage.VERTEX);
             const iB = mkB(sData.ind, GPUBufferUsage.INDEX);
+                       // Inside init():
+            const boxData = createBox(5.0); // Match your 'b' boundary
+            const boxPosBuf = mkB(boxData.pos, GPUBufferUsage.VERTEX);
+            const boxIndBuf = mkB(boxData.ind, GPUBufferUsage.INDEX);
+            
             const camBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
             const pipeline = device.createRenderPipeline({
