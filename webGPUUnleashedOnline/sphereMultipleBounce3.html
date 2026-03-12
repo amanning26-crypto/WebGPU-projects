@@ -118,8 +118,21 @@
             return new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, far * nf, -1, 0, 0, far * near * nf, 0]);
         }
 
+
+        function createBox(size) {
+            const p = new Float32Array([
+                -size, -size, size, size, -size, size, size, size, size, -size, size, size, // Front
+                -size, -size, -size, -size, size, -size, size, size, -size, size, -size, -size  // Back
+                // (Add other sides as needed, or use a simple wireframe/6-face set)
+            ]);
+            const i = new Uint16Array([0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4]); // Basic front/back for demo
+            return { pos: p, ind: i };
+        }
+
+
         async function init() {
             if (!navigator.gpu) return;
+
             const adapter = await navigator.gpu.requestAdapter();
             const device = await adapter.requestDevice();
             const context = canvas.getContext("webgpu");
@@ -127,8 +140,23 @@
             canvas.width = window.innerWidth; canvas.height = window.innerHeight;
             context.configure({ device, format, alphaMode: "opaque" });
 
+            // Inside init():
+            const boxData = createBox(5.0); // Match your 'b' boundary
+            const boxPosBuf = mkB(boxData.pos, GPUBufferUsage.VERTEX);
+            const boxIndBuf = mkB(boxData.ind, GPUBufferUsage.INDEX);
+
             const shader = device.createShaderModule({
                 code: `
+            @vertex
+fn vs_box(@location(0) p: vec3f) -> @builtin(position) vec4f {
+  return camera.vp * vec4f(p.x, p.y, p.z - 3.0, 1.0); // Offset -3 to match sphere center
+}
+
+@fragment
+fn fs_box() -> @location(0) vec4f {
+  return vec4f(0.3, 0.6, 1.0, 0.2); // Semitransparent blue (Alpha = 0.2)
+}
+
           struct Cam { vp: mat4x4f };
           @group(0) @binding(0) var<uniform> camera : Cam;
           struct VSOut { @builtin(position) pos: vec4f, @location(0) norm: vec3f, @location(1) col: vec3f };
@@ -166,21 +194,6 @@
 
             const sData = createSphere(1.0, 20, 20);
 
-
-            function createBox(size) {
-                const p = new Float32Array([
-                    -size, -size, size, size, -size, size, size, size, size, -size, size, size, // Front
-                    -size, -size, -size, -size, size, -size, size, size, -size, size, -size, -size  // Back
-                    // (Add other sides as needed, or use a simple wireframe/6-face set)
-                ]);
-                const i = new Uint16Array([0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4]); // Basic front/back for demo
-                return { pos: p, ind: i };
-            }
-
-            // Inside init():
-            const boxData = createBox(5.0); // Match your 'b' boundary
-            const boxPosBuf = mkB(boxData.pos, GPUBufferUsage.VERTEX);
-            const boxIndBuf = mkB(boxData.ind, GPUBufferUsage.INDEX);
 
 
 
@@ -310,10 +323,42 @@
                     colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.05, 0.05, 0.05, 1], loadOp: "clear", storeOp: "store" }],
                     depthStencilAttachment: { view: dT.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" }
                 });
-                pass.setPipeline(pipeline); pass.setBindGroup(0, camBG);
-                pass.setVertexBuffer(0, pB); pass.setVertexBuffer(1, nB); pass.setVertexBuffer(2, instB);
-                pass.setIndexBuffer(iB, "uint32"); pass.drawIndexed(sData.ind.length, spheres.length);
-                pass.end(); device.queue.submit([enc.finish()]);
+                pass.setPipeline(pipeline);
+                pass.setBindGroup(0, camBG);
+                pass.setVertexBuffer(0, pB);
+                pass.setVertexBuffer(1, nB);
+                pass.setVertexBuffer(2, instB);
+                pass.setIndexBuffer(iB, "uint32");
+                pass.drawIndexed(sData.ind.length, spheres.length);
+
+
+                // ... after pass.drawIndexed(sphere count) ...
+
+                pass.setPipeline(boxPipeline);
+                pass.setVertexBuffer(0, boxPosBuf);
+                pass.setIndexBuffer(boxIndBuf, "uint16");
+                pass.drawIndexed(boxData.ind.length); // Draw the cage
+
+
+
+                pass.end();
+                device.queue.submit([enc.finish()]);
+
+
+
+
+                function createBox(size) {
+                    const p = new Float32Array([
+                        -size, -size, size, size, -size, size, size, size, size, -size, size, size, // Front
+                        -size, -size, -size, -size, size, -size, size, size, -size, size, -size, -size  // Back
+                        // (Add other sides as needed, or use a simple wireframe/6-face set)
+                    ]);
+                    const i = new Uint16Array([0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4]); // Basic front/back for demo
+                    return { pos: p, ind: i };
+                }
+
+
+
                 requestAnimationFrame(frame);
             }
 
