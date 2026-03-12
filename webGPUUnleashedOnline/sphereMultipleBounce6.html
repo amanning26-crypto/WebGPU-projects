@@ -30,8 +30,8 @@
       <input type="range" id="velI" min="0" max="300" value="100">
     </div>
     <div class="row">
-      <label>Friction <span id="fricV" class="val">0%</span></label>
-      <input type="range" id="fricI" min="950" max="1000" value="1000">
+      <label>Friction <span id="fricV" class="val">1.00</span></label>
+      <input type="range" id="fricI" min="950" max="1050" value="1000">
     </div>
     <button id="resetBtn">RESTART</button>
   </div>
@@ -47,7 +47,7 @@
       dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
       normalize: (v) => { 
         let l = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); 
-        return l > 0 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 1]; 
+        return l > 0 ? [v[0] / l, v[1] / l, v[2] / l] : [0,0,0]; 
       },
       cross: (a, b) => [
         a[1] * b[2] - a[2] * b[1], 
@@ -81,7 +81,7 @@
     function mat4_perspective(fov, aspect, near, far) {
       let f = 1.0 / Math.tan(fov / 2);
       let nf = 1 / (near - far);
-      return new Float32Array([ f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, far * nf, -1, 0, 0, far * near * nf, 0 ]);
+      return new Float32Array([ f[0] / aspect, 0, 0, 0, 0, f[1], 0, 0, 0, 0, far * nf, -1, 0, 0, far * near * nf, 0 ]);
     }
 
     async function init() {
@@ -273,8 +273,11 @@
               if (sepV > 0) continue;
               let impS = -1.8 * sepV / (1/s.mass + 1/s2.mass);
               let imp = vec3.mul(n, impS);
-              s.v = vec3.sub(s.v, vec3.mul(imp, 1/s.mass)); s2.v = vec3.add(s2.v, vec3.mul(imp, 1/s2.mass));
-              let c = vec3.mul(n, (minD-dist)*0.5); s.p = vec3.sub(s.p, c); s2.p = vec3.add(s2.p, c);
+              s.v[0] -= imp[0] / s.mass; s.v[1] -= imp[1] / s.mass; s.v[2] -= imp[2] / s.mass;
+              s2.v[0] += imp[0] / s2.mass; s2.v[1] += imp[1] / s2.mass; s2.v[2] += imp[2] / s2.mass;
+              let c = vec3.mul(n, (minD-dist)*0.5); 
+              s.p[0] -= c[0]; s.p[1] -= c[1]; s.p[2] -= c[2];
+              s2.p[0] += c[0]; s2.p[1] += c[1]; s2.p[2] += c[2];
             }
           }
         });
