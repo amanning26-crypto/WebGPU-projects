@@ -2,11 +2,11 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>WebGPU: Procedural Web Texture</title>
+  <title>WebGPU: Fixed Attributes & Lace</title>
   <style>
     body { 
       margin: 0; 
-      background: #111; 
+      background: #050508; 
       overflow: hidden; 
       font-family: sans-serif; 
     }
@@ -19,12 +19,12 @@
       position: absolute; 
       top: 20px; 
       left: 20px; 
-      background: rgba(0, 0, 0, 0.85); 
+      background: rgba(0, 0, 0, 0.9); 
       color: white; 
       padding: 20px; 
       border-radius: 10px; 
       width: 220px; 
-      border: 1px solid #444; 
+      border: 1px solid #333; 
       z-index: 10; 
     }
     .row { 
@@ -35,7 +35,7 @@
     label { 
       font-size: 11px; 
       margin-bottom: 5px; 
-      color: #888; 
+      color: #777; 
       text-transform: uppercase; 
     }
     input[type=range] { 
@@ -71,9 +71,9 @@
     </div>
     <div class="row">
       <label>Friction <span id="fricV" class="val">1.00</span></label>
-      <input type="range" id="fricI" min="990" max="1010" value="1000">
+      <input type="range" id="fricI" min="980" max="1020" value="1000">
     </div>
-    <button id="resetBtn">GENERATE NEW WEBS</button>
+    <button id="resetBtn">REGENERATE WEBS</button>
   </div>
   <canvas id="c"></canvas>
 
@@ -135,15 +135,9 @@
       const device = await adapter.requestDevice();
       const context = canvas.getContext("webgpu");
       const format = navigator.gpu.getPreferredCanvasFormat();
-
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
-
-      context.configure({ 
-        device: device, 
-        format: format, 
-        alphaMode: "opaque" 
-      });
+      context.configure({ device: device, format: format, alphaMode: "opaque" });
 
       const shader = device.createShaderModule({
         code: `
@@ -151,14 +145,12 @@
           @group(0) @binding(0) var<uniform> camera : Cam;
           @group(0) @binding(1) var samp : sampler;
           @group(0) @binding(2) var texArray : texture_2d_array<f32>;
-
           struct VSOut { 
             @builtin(position) pos: vec4f, 
             @location(0) uv: vec2f, 
             @location(1) @interpolate(flat) texIdx: u32,
             @location(2) norm: vec3f 
           };
-
           @vertex
           fn vs_sphere(
             @location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f,
@@ -175,19 +167,16 @@
             o.norm = rotMat * n;
             return o;
           }
-
           @vertex
           fn vs_box(@location(0) p: vec3f) -> @builtin(position) vec4f {
             return camera.vp * vec4f(p.x, p.y, p.z - 3.0, 1.0);
           }
-
           @fragment
           fn fs_sphere(in: VSOut) -> @location(0) vec4f {
             let tex = textureSample(texArray, samp, in.uv, in.texIdx);
             let light = max(dot(in.norm, normalize(vec3f(1, 1, 1))), 0.2);
             return vec4f(tex.rgb * light, 1.0);
           }
-
           @fragment
           fn fs_box() -> @location(0) vec4f { 
             return vec4f(0.1, 0.1, 0.1, 0.4); 
@@ -200,11 +189,11 @@
         off.width = size;
         off.height = size;
         const ctx = off.getContext('2d');
-        ctx.fillStyle = `rgb(${r * 0.2}, ${g * 0.2}, ${b * 0.2})`;
+        ctx.fillStyle = `rgb(${r * 0.1}, ${g * 0.1}, ${b * 0.1})`;
         ctx.fillRect(0, 0, size, size);
         ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
         ctx.lineWidth = 1;
-        const spokes = 12;
+        const spokes = 14;
         ctx.beginPath();
         for(let i = 0; i < spokes; i++) {
           const ang = (i / spokes) * Math.PI * 2;
@@ -212,16 +201,15 @@
           ctx.lineTo(size / 2 + Math.cos(ang) * size, size / 2 + Math.sin(ang) * size);
         }
         ctx.stroke();
-        ctx.strokeStyle = `rgba(255, 255, 255, 0.5)`;
-        for(let j = 1; j < 10; j++) {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+        for(let j = 1; j < 8; j++) {
           ctx.beginPath();
-          const rad = (j / 10) * (size / 2);
+          const rad = (j / 8) * (size / 2);
           for(let i = 0; i <= spokes; i++) {
             const ang = (i / spokes) * Math.PI * 2;
-            const px = size / 2 + Math.cos(ang) * rad + (Math.random() - 0.5) * 8;
-            const py = size / 2 + Math.sin(ang) * rad + (Math.random() - 0.5) * 8;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
+            const px = size / 2 + Math.cos(ang) * rad + (Math.random() - 0.5) * 10;
+            const py = size / 2 + Math.sin(ang) * rad + (Math.random() - 0.5) * 10;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
           }
           ctx.stroke();
         }
@@ -229,10 +217,7 @@
       }
 
       const sphereGeom = (function(r, lat, lon) {
-        let p = [];
-        let n = [];
-        let uv = [];
-        let ind = [];
+        let p = [], n = [], uv = [], ind = [];
         for(let y = 0; y <= lat; y++) {
           let v = y / lat;
           let th = v * Math.PI;
@@ -255,22 +240,12 @@
             ind.push(b, b + 1, a + 1);
           }
         }
-        return { 
-          pos: new Float32Array(p), 
-          norm: new Float32Array(n), 
-          uv: new Float32Array(uv), 
-          ind: new Uint32Array(ind) 
-        };
+        return { pos: new Float32Array(p), norm: new Float32Array(n), uv: new Float32Array(uv), ind: new Uint32Array(ind) };
       })(1.0, 24, 24);
 
       const mkB = (d, u) => {
-        const b = device.createBuffer({ 
-          size: d.byteLength, 
-          usage: u, 
-          mappedAtCreation: true 
-        });
-        const mapped = b.getMappedRange();
-        new d.constructor(mapped).set(d);
+        const b = device.createBuffer({ size: d.byteLength, usage: u, mappedAtCreation: true });
+        new d.constructor(b.getMappedRange()).set(d);
         b.unmap();
         return b;
       };
@@ -281,14 +256,10 @@
       const spIB = mkB(sphereGeom.ind, GPUBufferUsage.INDEX);
       const bxPB = mkB(new Float32Array([-5,-5,5, 5,-5,5, 5,5,5, -5,5,5, -5,-5,-5, 5,-5,-5, 5,5,-5, -5,5,-5]), GPUBufferUsage.VERTEX);
       const bxFIB = mkB(new Uint16Array([0,1,2,0,2,3, 5,4,7,5,7,6, 4,0,3,4,3,7, 1,5,6,1,6,2, 3,2,6,3,6,7, 4,5,1,4,1,0]), GPUBufferUsage.INDEX);
-      const camBuf = device.createBuffer({ 
-        size: 64, 
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST 
-      });
-
+      const camBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       const bgl = device.createBindGroupLayout({
         entries: [
-          { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
+          { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } },
           { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
           { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } }
         ]
@@ -300,9 +271,9 @@
           module: shader, 
           entryPoint: "vs_sphere",
           buffers: [
-            { arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3" }] },
-            { arrayStride: 12, attributes: [{ shaderLocation: 1, format: "float32x3" }] },
-            { arrayStride: 8, attributes: [{ shaderLocation: 2, format: "float32x2" }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+            { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
             { 
               arrayStride: 56, 
               stepMode: "instance", 
@@ -317,87 +288,48 @@
             }
           ]
         },
-        fragment: { 
-          module: shader, 
-          entryPoint: "fs_sphere", 
-          targets: [{ format: format }] 
-        },
+        fragment: { module: shader, entryPoint: "fs_sphere", targets: [{ format: format }] },
         primitive: { topology: "triangle-list" },
         depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
       });
 
       const boxPipe = device.createRenderPipeline({
         layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-        vertex: { 
-          module: shader, 
-          entryPoint: "vs_box", 
-          buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3" }] }] 
-        },
-        fragment: { 
-          module: shader, 
-          entryPoint: "fs_box", 
-          targets: [{ format: format, blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} } }] 
-        },
+        vertex: { module: shader, entryPoint: "vs_box", buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }] },
+        fragment: { module: shader, entryPoint: "fs_box", targets: [{ format: format, blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} } }] },
         primitive: { topology: "triangle-list" },
         depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "less" }
       });
 
-      let spheres = [];
-      let instB = null;
-      let dT = null;
-      let camBG = null;
-      let texArr = null;
+      let spheres = [], instB = null, dT = null, camBG = null, texArr = null;
       const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
       function reset() {
         const count = parseInt(document.getElementById('cntI').value);
         if (texArr) texArr.destroy();
-        texArr = device.createTexture({ 
-          size: [256, 256, count], 
-          format: 'rgba8unorm', 
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST 
-        });
+        texArr = device.createTexture({ size: [256, 256, count], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
         for (let i = 0; i < count; i++) {
           const data = generateWebTexture(256, Math.random() * 255, Math.random() * 255, Math.random() * 255);
-          device.queue.writeTexture(
-            { texture: texArr, origin: [0, 0, i] }, 
-            data, 
-            { bytesPerRow: 256 * 4 }, 
-            [256, 256, 1]
-          );
+          device.queue.writeTexture({ texture: texArr, origin: [0, 0, i] }, data, { bytesPerRow: 256 * 4 }, [256, 256, 1]);
         }
-        camBG = device.createBindGroup({ 
-          layout: bgl, 
-          entries: [
-            { binding: 0, resource: { buffer: camBuf } }, 
-            { binding: 1, resource: sampler }, 
-            { binding: 2, resource: texArr.createView() }
-          ] 
-        });
+        camBG = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: camBuf } }, { binding: 1, resource: sampler }, { binding: 2, resource: texArr.createView() }] });
         spheres = Array.from({ length: count }, (_, i) => ({
-          p: [(Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8, (Math.random() - 0.5) * 6 - 3],
-          v: [(Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.1],
+          p: [(Math.random()-0.5)*8, (Math.random()-0.5)*8, (Math.random()-0.5)*6-3],
+          v: [(Math.random()-0.5)*0.1, (Math.random()-0.5)*0.1, (Math.random()-0.5)*0.1],
           s: 0.4 + Math.random() * 0.6,
-          rot: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+          rot: new Float32Array([1,0,0,0,1,0,0,0,1]),
           tIdx: i
         }));
         if (instB) instB.destroy();
-        instB = device.createBuffer({ 
-          size: count * 56, 
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST 
-        });
+        instB = device.createBuffer({ size: count * 56, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
         if (dT) dT.destroy();
-        dT = device.createTexture({ 
-          size: [canvas.width, canvas.height], 
-          format: "depth24plus", 
-          usage: GPUTextureUsage.RENDER_ATTACHMENT 
-        });
+        dT = device.createTexture({ size: [canvas.width, canvas.height], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
       }
 
       function frame() {
         const speed = parseInt(document.getElementById('velI').value) / 100;
         const fric = parseInt(document.getElementById('fricI').value) / 1000;
-        spheres.forEach((s) => {
+        spheres.forEach(s => {
           s.v = vec3.mul(s.v, fric);
           s.p = vec3.add(s.p, vec3.mul(s.v, speed));
           [0, 1, 2].forEach(a => {
@@ -419,20 +351,9 @@
         const proj = mat4_perspective(1.0, canvas.width / canvas.height, 0.1, 100);
         device.queue.writeBuffer(camBuf, 0, mat4_multiply(proj, view));
         const enc = device.createCommandEncoder();
-        const backView = context.getCurrentTexture().createView();
         const pass = enc.beginRenderPass({
-          colorAttachments: [{ 
-            view: backView, 
-            clearValue: [0.02, 0.02, 0.03, 1], 
-            loadOp: "clear", 
-            storeOp: "store" 
-          }],
-          depthStencilAttachment: { 
-            view: dT.createView(), 
-            depthClearValue: 1.0, 
-            depthLoadOp: "clear", 
-            depthStoreOp: "store" 
-          }
+          colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.01, 0.01, 0.02, 1], loadOp: "clear", storeOp: "store" }],
+          depthStencilAttachment: { view: dT.createView(), depthClearValue: 1.0, depthLoadOp: "clear", depthStoreOp: "store" }
         });
         pass.setBindGroup(0, camBG);
         pass.setPipeline(spherePipe);
@@ -447,20 +368,13 @@
         pass.setIndexBuffer(bxFIB, "uint16");
         pass.drawIndexed(36);
         pass.end();
-        const commandBuffer = enc.finish();
-        device.queue.submit([commandBuffer]);
+        device.queue.submit([enc.finish()]);
         requestAnimationFrame(frame);
       }
 
-      document.getElementById('cntI').oninput = e => {
-        document.getElementById('cntV').innerText = e.target.value;
-      };
-      document.getElementById('velI').oninput = e => {
-        document.getElementById('velV').innerText = (e.target.value / 100).toFixed(1);
-      };
-      document.getElementById('fricI').oninput = e => {
-        document.getElementById('fricV').innerText = (e.target.value / 1000).toFixed(2);
-      };
+      document.getElementById('cntI').oninput = e => { document.getElementById('cntV').innerText = e.target.value; };
+      document.getElementById('velI').oninput = e => { document.getElementById('velV').innerText = (e.target.value / 100).toFixed(1); };
+      document.getElementById('fricI').oninput = e => { document.getElementById('fricV').innerText = (e.target.value / 1000).toFixed(2); };
       document.getElementById('resetBtn').onclick = reset;
       reset();
       frame();
