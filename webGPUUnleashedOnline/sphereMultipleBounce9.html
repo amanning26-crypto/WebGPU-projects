@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU: Procedural Lace & Web</title>
+  <style>
+    body { margin: 0; background: #111; overflow: hidden; font-family: sans-serif; }
+    canvas { width: 100vw; height: 100vh; display: block; }
+    #ui { position: absolute; top: 20px; left: 20px; background: rgba(0, 0, 0, 0.85); color: white; padding: 20px; border-radius: 10px; width: 220px; border: 1px solid #444; z-index: 10; }
+    .row { margin-bottom: 15px; display: flex; flex-direction: column; }
+    label { font-size: 11px; margin-bottom: 5px; color: #888; text-transform: uppercase; }
+    input[type=range] { cursor: pointer; accent-color: #0f0; }
+    button { background: #0f0; color: #000; border: none; padding: 10px; cursor: pointer; border-radius: 4px; font-weight: bold; width: 100%; }
+    .val { float: right; color: #0f0; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div class="row">
+      <label>Spheres <span id="cntV" class="val">40</span></label>
+      <input type="range" id="cntI" min="5" max="600" value="40">
+    </div>
+    <div class="row">
+      <label>Speed <span id="velV" class="val">1.0</span></label>
+      <input type="range" id="velI" min="0" max="300" value="100">
+    </div>
+    <button id="resetBtn">GENERATE NEW WEBS</button>
+  </div>
+  <canvas id="c"></canvas>
+
+  <script type="module">
+    const canvas = document.querySelector("#c");
+    const vec3 = {
+      sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+      add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+      mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+      dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+      len: (v) => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]),
+      normalize: (v) => {
+        let l = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        return l === 0 ? [0, 0, 0] : [v[0] / l, v[1] / l, v[2] / l];
+      },
+      cross: (a, b) => [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+      ]
+    };
+
+    function mat4_multiply(a, b) {
+      let out = new Float32Array(16);
+      for (let c = 0; c < 4; c++) {
+        for (let r = 0; r < 4; r++) {
+          out[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] + a[1 * 4 + r] * b[c * 4 + 1] + a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
+        }
+      }
+      return out;
+    }
+
+    function mat4_lookAt(eye, target, up) {
+      let z = vec3.normalize(vec3.sub(eye, target));
+      let x = vec3.normalize(vec3.cross(up, z));
+      let y = vec3.cross(z, x);
+      return new Float32Array([
+        x[0], y[0], z[0], 0,
+        x[1], y[1], z[1], 0,
+        x[2], y[2], z[2], 0,
+        -vec3.dot(x, eye), -vec3.dot(y, eye), -vec3.dot(z, eye), 1
+      ]);
+    }
+
+    function mat4_perspective(fov, aspect, near, far) {
+      let f = 1.0 / Math.tan(fov / 2);
+      let nf = 1 / (near - far);
+      return new Float32Array([
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, far * nf, -1,
+        0, 0, far * near * nf, 0
+      ]);
+    }
+
+    async function init() {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const context = canvas.getContext("webgpu");
+      const format = navigator.gpu.getPreferredCanvasFormat();
+
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      context.configure({ device, format, alphaMode: "opaque" });
+
+      const shader = device.createShaderModule({
+        code: `
+          struct Cam { vp: mat4x4f };
+          @group(0) @binding(0) var<uniform> camera : Cam;
+          @group(0) @binding(1) var samp : sampler;
+          @group(0) @binding(2) var texArray : texture_2d_array<f32>;
+
+          struct VSOut { 
+            @builtin(position) pos: vec4f, 
+            @location(0) uv: vec2f, 
+            @location(1) @interpolate(flat) texIdx: u32,
+            @location(2) norm: vec3f 
+          };
+
+          @vertex
+          fn vs_sphere(
+            @location(0) p: vec3f, @location(1) n: vec3f, @location(2) uv: vec2f,
+            @location(3) iP: vec3f, @location(4) iS: f32, 
+            @location(5) r0: vec3f, @location(6) r1: vec3f, @location(7) r2: vec3f,
+            @location(8) tIdx: u32
+          ) -> VSOut {
+            var o: VSOut;
+            let rotMat = mat3x3f(r0, r1, r2);
+            o.pos = camera.vp * vec4f((rotMat * p) * iS + iP, 1.0);
+            o.uv = uv;
+            o.texIdx = tIdx;
+            o.norm = rotMat * n;
+            return o;
+          }
+
+          @vertex
+          fn vs_box(@location(0) p: vec3f) -> @builtin(position) vec4f {
+            return camera.vp * vec4f(p.x, p.y, p.z - 3.0, 1.0);
+          }
+
+          @fragment
+          fn fs_sphere(in: VSOut) -> @location(0) vec4f {
+            let tex = textureSample(texArray, samp, in.uv, in.texIdx);
+            let light = max(dot(in.norm, normalize(vec3f(1,1,1))), 0.2);
+            return vec4f(tex.rgb * light, 1.0);
+          }
+
+          @fragment
+          fn fs_box() -> @location(0) vec4f { return vec4f(0.1, 0.1, 0.1, 0.4); }
+        `
+      });
+
+      // Procedural Web/Lace Generator
+      function generateWebTexture(size, r, g, b) {
+        const off = document.createElement('canvas');
+        off.width = size;
+        off.height = size;
+        const ctx = off.getContext('2d');
+        ctx.fillStyle = `rgb(${r*0.3},${g*0.3},${b*0.3})`;
+        ctx.fillRect(0, 0, size, size);
+        ctx.strokeStyle = `rgb(${r},${g},${b})`;
+        ctx.lineWidth = 1;
+        
+        // 1. Draw Radial Spokes
+        const spokes = 8 + Math.random() * 8;
+        ctx.beginPath();
+        for(let i=0; i<spokes; i++) {
+          const ang = (i / spokes) * Math.PI * 2;
+          ctx.moveTo(size/2, size/2);
+          ctx.lineTo(size/2 + Math.cos(ang) * size, size/2 + Math.sin(ang) * size);
+        }
+        ctx.stroke();
+
+        // 2. Draw Concentric Jittery Rings
+        for(let j=1; j<6; j++) {
+          ctx.beginPath();
+          const rad = (j / 6) * (size/2);
+          for(let i=0; i<=spokes; i++) {
+            const ang = (i / spokes) * Math.PI * 2;
+            const px = size/2 + Math.cos(ang) * rad + (Math.random()-0.5)*10;
+            const py = size/2 + Math.sin(ang) * rad + (Math.random()-0.5)*10;
+            if(i===0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+        }
+
+        // 3. Random Walker "Lace" Trails
+        ctx.strokeStyle = `rgba(255,255,255,0.4)`;
+        for(let t=0; t<3; t++) {
+          let x = Math.random() * size;
+          let y = Math.random() * size;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          for(let step=0; step<100; step++) {
+            x += (Math.random()-0.5) * 20;
+            y += (Math.random()-0.5) * 20;
+            ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+
+        return ctx.getImageData(0, 0, size, size).data;
+      }
+
+      const sphereGeom = (function(r, lat, lon) {
+        let p=[], n=[], uv=[], ind=[];
+        for(let y=0; y<=lat; y++) {
+          let v=y/lat, th=v*Math.PI;
+          for(let x=0; x<=lon; x++) {
+            let u=x/lon, ph=u*Math.PI*2;
+            let sx=Math.sin(th)*Math.cos(ph), sy=Math.cos(th), sz=Math.sin(th)*Math.sin(ph);
+            p.push(r*sx, r*sy, r*sz); n.push(sx, sy, sz); uv.push(u, v);
+          }
+        }
+        for(let y=0; y<lat; y++) {
+          for(let x=0; x<lon; x++) {
+            let a=y*(lon+1)+x, b=a+lon+1;
+            ind.push(a, b, a+1, b, b+1, a+1);
+          }
+        }
+        return { pos: new Float32Array(p), norm: new Float32Array(n), uv: new Float32Array(uv), ind: new Uint32Array(ind) };
+      })(1.0, 24, 24);
+
+      const mkB = (d, u) => {
+        const b = device.createBuffer({ size: d.byteLength, usage: u, mappedAtCreation: true });
+        new d.constructor(b.getMappedRange()).set(d);
+        b.unmap();
+        return b;
+      };
+
+      const spPB = mkB(sphereGeom.pos, GPUBufferUsage.VERTEX);
+      const spNB = mkB(sphereGeom.norm, GPUBufferUsage.VERTEX);
+      const spUVB = mkB(sphereGeom.uv, GPUBufferUsage.VERTEX);
+      const spIB = mkB(sphereGeom.ind, GPUBufferUsage.INDEX);
+      const bxPB = mkB(new Float32Array([-5,-5,5, 5,-5,5, 5,5,5, -5,5,5, -5,-5,-5, 5,-5,-5, 5,5,-5, -5,5,-5]), GPUBufferUsage.VERTEX);
+      const bxFIB = mkB(new Uint16Array([0,1,2,0,2,3, 5,4,7,5,7,6, 4,0,3,4,3,7, 1,5,6,1,6,2, 3,2,6,3,6,7, 4,5,1,4,1,0]), GPUBufferUsage.INDEX);
+      const camBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+      const bgl = device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } }
+        ]
+      });
+
+      const spherePipe = device.createRenderPipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+        vertex: {
+          module: shader, entryPoint: "vs_sphere",
+          buffers: [
+            { arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3" }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 1, format: "float32x3" }] },
+            { arrayStride: 8, attributes: [{ shaderLocation: 2, format: "float32x2" }] },
+            { arrayStride: 56, stepMode: "instance", attributes: [
+              { shaderLocation: 3, offset: 0, format: "float32x3" },
+              { shaderLocation: 4, offset: 12, format: "float32" },
+              { shaderLocation: 5, offset: 16, format: "float32x3" },
+              { shaderLocation: 6, offset: 28, format: "float32x3" },
+              { shaderLocation: 7, offset: 40, format: "float32x3" },
+              { shaderLocation: 8, offset: 52, format: "uint32" }
+            ]}
+          ]
+        },
+        fragment: { module: shader, entryPoint: "fs_sphere", targets: [{ format }] },
+        primitive: { topology: "triangle-list" },
+        depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
+      });
+
+      const boxPipe = device.createRenderPipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+        vertex: { module: shader, entryPoint: "vs_box", buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3" }] }] },
+        fragment: { module: shader, entryPoint: "fs_box", targets: [{ format, blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} } }] },
+        primitive: { topology: "triangle-list" },
+        depthStencil: { format: "depth24plus", depthWriteEnabled: false, depthCompare: "less" }
+      });
+
+      let spheres = [], instB = null, dT = null, camBG = null, texArr = null;
+      const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+
+      function reset() {
+        const count = parseInt(document.getElementById('cntI').value);
+        if (texArr) texArr.destroy();
+        texArr = device.createTexture({ size: [256, 256, count], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+        
+        for (let i = 0; i < count; i++) {
+          const data = generateWebTexture(256, Math.random()*255, Math.random()*255, Math.random()*255);
+          device.queue.writeTexture({ texture: texArr, origin: [0, 0, i] }, data, { bytesPerRow: 256 * 4 }, [256, 256, 1]);
+        }
+
+        camBG = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: camBuf } }, { binding: 1, resource: sampler }, { binding: 2, resource: texArr.createView() }] });
+        spheres = Array.from({ length: count }, (_, i) => ({
+          p: [(Math.random()-0.5)*8, (Math.random()-0.5)*8, (Math.random()-0.5)*6-3],
+          v: [(Math.random()-0.5)*0.1, (Math.random()-0.5)*0.1, (Math.random()-0.5)*0.1],
+          s: 0.4 + Math.random()*0.6,
+          rot: new Float32Array([1,0,0, 0,1,0, 0,0,1]),
+          tIdx: i
+        }));
+
+        if (instB) instB.destroy();
+        instB = device.createBuffer({ size: count * 56, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        dT = device.createTexture({ size: [canvas.width, canvas.height], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      }
+
+      function frame() {
+        const speed = parseInt(document.getElementById('velI').value) / 100;
+        spheres.forEach((s) => {
+          s.p = vec3.add(s.p, vec3.mul(s.v, speed));
+          [0,1,2].forEach(a => {
+            let lim = a === 2 ? (s.p[a] > 2-s.s || s.p[a] < -8+s.s) : (Math.abs(s.p[a]) > 5-s.s);
+            if (lim) s.v[a] *= -1;
+          });
+        });
+
+        const iD = new Float32Array(spheres.length * 14);
+        const iD32 = new Uint32Array(iD.buffer);
+        spheres.forEach((s, i) => {
+          const o = i * 14;
+          iD.set(s.p, o);
+          iD[o+3] = s.s;
+          iD.set(s.rot, o+4);
+          iD32[o+13] = s.tIdx;
+        });
+        device.queue.writeBuffer(instB, 0, iD);
+
+        const view = mat4_lookAt([0, 0, 15], [0, 0, -3], [0, 1, 0]);
+        const proj = mat4_perspective(1.0, canvas.width / canvas.height, 0.1, 100);
+        device.queue.writeBuffer(camBuf, 0, mat4_multiply(proj, view));
+
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginRenderPass({
+          colorAttachments: [{ view: context.getCurrentTexture().createView(), clearValue: [0.02, 0.02, 0.03, 1], loadOp: "clear", storeOp: "store" }],
+          depthStencilAttachment: { view: dT.createView(), depthClearValue: 1.0, depthLoadOp: "clear", depthStoreOp: "store" }
+        });
+
+        pass.setBindGroup(0, camBG);
+        pass.setPipeline(spherePipe);
+        pass.setVertexBuffer(0, spPB);
+        pass.setVertexBuffer(1, spNB);
+        pass.setVertexBuffer(2, spUVB);
+        pass.setVertexBuffer(3, instB);
+        pass.setIndexBuffer(spIB, "uint32");
+        pass.drawIndexed(sphereGeom.ind.length, spheres.length);
+
+        pass.setPipeline(boxPipe);
+        pass.setVertexBuffer(0, bxPB);
+        pass.setIndexBuffer(bxFIB, "uint16");
+        pass.drawIndexed(36);
+
+        pass.end();
+        device.queue.submit([enc.finish()]);
+        requestAnimationFrame(frame);
+      }
+      reset();
+      frame();
+      document.getElementById('resetBtn').onclick = reset;
+      document.getElementById('cntI').oninput = e => document.getElementById('cntV').innerText = e.target.value;
+      document.getElementById('velI').oninput = e => document.getElementById('velV').innerText = (e.target.value / 100).toFixed(1);
+    }
+    init();
+  </script>
+</body>
+</html>
