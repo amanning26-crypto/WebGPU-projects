@@ -377,8 +377,13 @@
                 primitive: { topology: "triangle-list", cullMode: "back" },
                 depthStencil: {
                     format: "depth24plus",
-                    depthWriteEnabled: true,
-                    depthCompare: "less"
+                    depthWriteEnabled: true, // Set to false for boxPipe/edgePipe
+                    depthCompare: "less",
+                    // Add these lines below to satisfy the validation error
+                    stencilFront: { compare: "always", failOp: "keep", depthFailOp: "keep", passOp: "keep" },
+                    stencilBack: { compare: "always", failOp: "keep", depthFailOp: "keep", passOp: "keep" },
+                    stencilReadMask: 0xFF,
+                    stencilWriteMask: 0xFF
                 }
             });
 
@@ -403,8 +408,13 @@
                 primitive: { topology: "triangle-list" },
                 depthStencil: {
                     format: "depth24plus",
-                    depthWriteEnabled: false,
-                    depthCompare: "less"
+                    depthWriteEnabled: true, // Set to false for boxPipe/edgePipe
+                    depthCompare: "less",
+                    // Add these lines below to satisfy the validation error
+                    stencilFront: { compare: "always", failOp: "keep", depthFailOp: "keep", passOp: "keep" },
+                    stencilBack: { compare: "always", failOp: "keep", depthFailOp: "keep", passOp: "keep" },
+                    stencilReadMask: 0xFF,
+                    stencilWriteMask: 0xFF
                 }
             });
 
@@ -423,8 +433,13 @@
                 primitive: { topology: "line-list" },
                 depthStencil: {
                     format: "depth24plus",
-                    depthWriteEnabled: false,
-                    depthCompare: "less"
+                    depthWriteEnabled: true, // Set to false for boxPipe/edgePipe
+                    depthCompare: "less",
+                    // Add these lines below to satisfy the validation error
+                    stencilFront: { compare: "always", failOp: "keep", depthFailOp: "keep", passOp: "keep" },
+                    stencilBack: { compare: "always", failOp: "keep", depthFailOp: "keep", passOp: "keep" },
+                    stencilReadMask: 0xFF,
+                    stencilWriteMask: 0xFF
                 }
             });
 
@@ -658,9 +673,13 @@
                     }],
                     depthStencilAttachment: {
                         view: dT.createView(),
-                        depthClearValue: 1,
-                        loadOp: "clear",
-                        depthStoreOp: "store"
+                        depthClearValue: 1.0,
+                        depthLoadOp: "clear",
+                        depthStoreOp: "store",
+                        // You MUST include these even if you don't use stencils
+                        stencilLoadOp: "clear",
+                        stencilStoreOp: "store",
+                        stencilClearValue: 0
                     }
                 });
 
