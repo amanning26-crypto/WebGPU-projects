@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>WebGPU: Fixed Buffers & Lace</title>
+  <title>WebGPU: Procedural Web Texture</title>
   <style>
     body { 
       margin: 0; 
@@ -71,7 +71,7 @@
     </div>
     <div class="row">
       <label>Friction <span id="fricV" class="val">1.00</span></label>
-      <input type="range" id="fricI" min="980" max="1020" value="1000">
+      <input type="range" id="fricI" min="990" max="1010" value="1000">
     </div>
     <button id="resetBtn">GENERATE NEW WEBS</button>
   </div>
@@ -80,21 +80,9 @@
   <script type="module">
     const canvas = document.querySelector("#c");
     const vec3 = {
-      sub: (a, b) => [
-        a[0] - b[0], 
-        a[1] - b[1], 
-        a[2] - b[2]
-      ],
-      add: (a, b) => [
-        a[0] + b[0], 
-        a[1] + b[1], 
-        a[2] + b[2]
-      ],
-      mul: (a, s) => [
-        a[0] * s, 
-        a[1] * s, 
-        a[2] * s
-      ],
+      sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+      add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+      mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
       dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
       len: (v) => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]),
       normalize: (v) => {
@@ -113,11 +101,7 @@
       let out = new Float32Array(16);
       for (let c = 0; c < 4; c++) {
         for (let r = 0; r < 4; r++) {
-          let idx = c * 4 + r;
-          out[idx] = a[0 * 4 + r] * b[c * 4 + 0] + 
-                     a[1 * 4 + r] * b[c * 4 + 1] + 
-                     a[2 * 4 + r] * b[c * 4 + 2] + 
-                     a[3 * 4 + r] * b[c * 4 + 3];
+          out[c * 4 + r] = a[0*4+r]*b[c*4+0] + a[1*4+r]*b[c*4+1] + a[2*4+r]*b[c*4+2] + a[3*4+r]*b[c*4+3];
         }
       }
       return out;
@@ -127,25 +111,23 @@
       let z = vec3.normalize(vec3.sub(eye, target));
       let x = vec3.normalize(vec3.cross(up, z));
       let y = vec3.cross(z, x);
-      let res = new Float32Array([
+      return new Float32Array([
         x[0], y[0], z[0], 0,
         x[1], y[1], z[1], 0,
         x[2], y[2], z[2], 0,
         -vec3.dot(x, eye), -vec3.dot(y, eye), -vec3.dot(z, eye), 1
       ]);
-      return res;
     }
 
     function mat4_perspective(fov, aspect, near, far) {
       let f = 1.0 / Math.tan(fov / 2);
       let nf = 1 / (near - far);
-      let res = new Float32Array([
-        f / aspect, 0, 0, 0,
+      return new Float32Array([
+        f/aspect, 0, 0, 0,
         0, f, 0, 0,
-        0, 0, far * nf, -1,
-        0, 0, far * near * nf, 0
+        0, 0, far*nf, -1,
+        0, 0, far*near*nf, 0
       ]);
-      return res;
     }
 
     async function init() {
@@ -153,8 +135,10 @@
       const device = await adapter.requestDevice();
       const context = canvas.getContext("webgpu");
       const format = navigator.gpu.getPreferredCanvasFormat();
+
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
+
       context.configure({ 
         device: device, 
         format: format, 
@@ -223,7 +207,7 @@
         const spokes = 12;
         ctx.beginPath();
         for(let i = 0; i < spokes; i++) {
-          let ang = (i / spokes) * Math.PI * 2;
+          const ang = (i / spokes) * Math.PI * 2;
           ctx.moveTo(size / 2, size / 2);
           ctx.lineTo(size / 2 + Math.cos(ang) * size, size / 2 + Math.sin(ang) * size);
         }
@@ -231,11 +215,11 @@
         ctx.strokeStyle = `rgba(255, 255, 255, 0.5)`;
         for(let j = 1; j < 10; j++) {
           ctx.beginPath();
-          let rad = (j / 10) * (size / 2);
+          const rad = (j / 10) * (size / 2);
           for(let i = 0; i <= spokes; i++) {
-            let ang = (i / spokes) * Math.PI * 2;
-            let px = size / 2 + Math.cos(ang) * rad + (Math.random() - 0.5) * 8;
-            let py = size / 2 + Math.sin(ang) * rad + (Math.random() - 0.5) * 8;
+            const ang = (i / spokes) * Math.PI * 2;
+            const px = size / 2 + Math.cos(ang) * rad + (Math.random() - 0.5) * 8;
+            const py = size / 2 + Math.sin(ang) * rad + (Math.random() - 0.5) * 8;
             if (i === 0) ctx.moveTo(px, py);
             else ctx.lineTo(px, py);
           }
@@ -280,13 +264,13 @@
       })(1.0, 24, 24);
 
       const mkB = (d, u) => {
-        let b = device.createBuffer({ 
+        const b = device.createBuffer({ 
           size: d.byteLength, 
           usage: u, 
           mappedAtCreation: true 
         });
-        let m = b.getMappedRange();
-        new d.constructor(m).set(d);
+        const mapped = b.getMappedRange();
+        new d.constructor(mapped).set(d);
         b.unmap();
         return b;
       };
@@ -304,7 +288,7 @@
 
       const bgl = device.createBindGroupLayout({
         entries: [
-          { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } },
+          { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
           { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
           { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: '2d-array' } }
         ]
@@ -316,9 +300,9 @@
           module: shader, 
           entryPoint: "vs_sphere",
           buffers: [
-            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
-            { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
-            { arrayStride: 8, attributes: [{ shaderLocation: 2, offset: 0, format: "float32x2" }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3" }] },
+            { arrayStride: 12, attributes: [{ shaderLocation: 1, format: "float32x3" }] },
+            { arrayStride: 8, attributes: [{ shaderLocation: 2, format: "float32x2" }] },
             { 
               arrayStride: 56, 
               stepMode: "instance", 
@@ -347,7 +331,7 @@
         vertex: { 
           module: shader, 
           entryPoint: "vs_box", 
-          buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }] 
+          buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3" }] }] 
         },
         fragment: { 
           module: shader, 
@@ -374,7 +358,7 @@
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST 
         });
         for (let i = 0; i < count; i++) {
-          let data = generateWebTexture(256, Math.random() * 255, Math.random() * 255, Math.random() * 255);
+          const data = generateWebTexture(256, Math.random() * 255, Math.random() * 255, Math.random() * 255);
           device.queue.writeTexture(
             { texture: texArr, origin: [0, 0, i] }, 
             data, 
@@ -412,33 +396,28 @@
 
       function frame() {
         const speed = parseInt(document.getElementById('velI').value) / 100;
-        const fricRaw = parseInt(document.getElementById('fricI').value);
-        const fric = fricRaw / 1000;
+        const fric = parseInt(document.getElementById('fricI').value) / 1000;
         spheres.forEach((s) => {
           s.v = vec3.mul(s.v, fric);
-          let movement = vec3.mul(s.v, speed);
-          s.p = vec3.add(s.p, movement);
+          s.p = vec3.add(s.p, vec3.mul(s.v, speed));
           [0, 1, 2].forEach(a => {
             let lim = a === 2 ? (s.p[a] > 2 - s.s || s.p[a] < -8 + s.s) : (Math.abs(s.p[a]) > 5 - s.s);
-            if (lim) {
-              s.v[a] *= -1;
-            }
+            if (lim) s.v[a] *= -1;
           });
         });
         const iD = new Float32Array(spheres.length * 14);
         const iD32 = new Uint32Array(iD.buffer);
         spheres.forEach((s, i) => {
-          let o = i * 14;
+          const o = i * 14;
           iD.set(s.p, o);
           iD[o + 3] = s.s;
           iD.set(s.rot, o + 4);
           iD32[o + 13] = s.tIdx;
         });
         device.queue.writeBuffer(instB, 0, iD);
-        let view = mat4_lookAt([0, 0, 15], [0, 0, -3], [0, 1, 0]);
-        let proj = mat4_perspective(1.0, canvas.width / canvas.height, 0.1, 100);
-        let vp = mat4_multiply(proj, view);
-        device.queue.writeBuffer(camBuf, 0, vp);
+        const view = mat4_lookAt([0, 0, 15], [0, 0, -3], [0, 1, 0]);
+        const proj = mat4_perspective(1.0, canvas.width / canvas.height, 0.1, 100);
+        device.queue.writeBuffer(camBuf, 0, mat4_multiply(proj, view));
         const enc = device.createCommandEncoder();
         const backView = context.getCurrentTexture().createView();
         const pass = enc.beginRenderPass({
@@ -468,8 +447,8 @@
         pass.setIndexBuffer(bxFIB, "uint16");
         pass.drawIndexed(36);
         pass.end();
-        let cb = enc.finish();
-        device.queue.submit([cb]);
+        const commandBuffer = enc.finish();
+        device.queue.submit([commandBuffer]);
         requestAnimationFrame(frame);
       }
 
@@ -477,12 +456,10 @@
         document.getElementById('cntV').innerText = e.target.value;
       };
       document.getElementById('velI').oninput = e => {
-        let v = e.target.value / 100;
-        document.getElementById('velV').innerText = v.toFixed(1);
+        document.getElementById('velV').innerText = (e.target.value / 100).toFixed(1);
       };
       document.getElementById('fricI').oninput = e => {
-        let f = e.target.value / 1000;
-        document.getElementById('fricV').innerText = f.toFixed(2);
+        document.getElementById('fricV').innerText = (e.target.value / 1000).toFixed(2);
       };
       document.getElementById('resetBtn').onclick = reset;
       reset();
