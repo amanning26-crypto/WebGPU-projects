@@ -203,7 +203,7 @@
             let tex = textureSample(texArray, samp, in.uv, in.texIdx);
             // Simple lighting: dot product tells us how much the face points at the light
             let light = max(dot(in.norm, normalize(vec3f(1.0, 1.0, 1.0))), 0.2);
-            return vec4f(tex.rgb * light, 1.0);
+            return vec4f(tex.rgb * light * 1.5, 1.0);
           }
 
           @fragment 
