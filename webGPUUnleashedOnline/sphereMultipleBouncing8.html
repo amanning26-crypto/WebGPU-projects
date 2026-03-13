@@ -566,6 +566,15 @@
                 }
 
 
+                if (dT.width !== canvas.width || dT.height !== canvas.height) {
+                    dT.destroy();
+                    dT = device.createTexture({
+                        size: [canvas.width, canvas.height],
+                        format: "depth24plus",
+                        usage: GPUTextureUsage.RENDER_ATTACHMENT
+                    });
+                }
+
                 // Physics update
                 spheres.forEach((s, i) => {
                     s.v = vec3.mul(s.v, fric);
