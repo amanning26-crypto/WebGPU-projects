@@ -1,566 +1,273 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <title>WebGPU Bacteria Simulation</title>
-  <style>
-    body { margin: 0; background: #111; color: #eee; font-family: sans-serif; }
-    #ui {
-      position: absolute; top: 8px; left: 8px; padding: 8px 10px;
-      background: rgba(0,0,0,0.6); border-radius: 4px; font-size: 13px;
-    }
-    #ui label { display: block; margin: 4px 0 2px; }
-    #ui input[type=range] { width: 200px; }
-    canvas { width: 100vw; height: 100vh; display: block; }
-  </style>
+<meta charset="utf-8">
+<title>Compact WebGPU Bacteria Simulation</title>
+<style>
+  body { margin:0; background:#111; color:#eee; font-family:sans-serif; }
+  #ui { position:fixed; top:10px; left:10px; background:#222; padding:10px; border-radius:6px; }
+  label { display:block; margin-bottom:6px; }
+</style>
 </head>
 <body>
-  <div id="ui">
-    <label>Time speed: <span id="timeVal">1.0</span>x</label>
-    <input id="timeSpeed" type="range" min="0" max="3" step="0.1" value="1">
+<div id="ui">
+  <label>Bacteria Count: <span id="countLabel">50</span></label>
+  <input id="countSlider" type="range" min="1" max="100" value="50">
+  <button id="resetBtn">Reset</button>
+</div>
+<canvas id="gfx"></canvas>
 
-    <label>Bacteria count: <span id="bacVal">50</span></label>
-    <input id="bacCount" type="range" min="5" max="200" step="5" value="50">
+<script type="module">
+/* -----------------------------------------------------------
+   SECTION 1: Basic Math Helpers
+----------------------------------------------------------- */
+function mat4Perspective(fov, aspect, near, far) {
+  const f = 1.0 / Math.tan(fov/2), nf = 1/(near - far);
+  return new Float32Array([
+    f/aspect,0,0,0,
+    0,f,0,0,
+    0,0,(far+near)*nf,-1,
+    0,0,(2*far*near)*nf,0
+  ]);
+}
+function mat4LookAt(eye,center,up) {
+  const [ex,ey,ez]=eye,[cx,cy,cz]=center,[ux,uy,uz]=up;
+  let zx=ex-cx, zy=ey-cy, zz=ez-cz;
+  const zl=1/Math.hypot(zx,zy,zz); zx*=zl; zy*=zl; zz*=zl;
+  let xx=uy*zz-uz*zy, xy=uz*zx-ux*zz, xz=ux*zy-uy*zx;
+  const xl=1/Math.hypot(xx,xy,xz); xx*=xl; xy*=xl; xz*=xl;
+  const yx=zy*xz-zz*xy, yy=zz*xx-zx*xz, yz=zx*xy-zy*xx;
+  return new Float32Array([
+    xx,yx,zx,0,
+    xy,yy,zy,0,
+    xz,yz,zz,0,
+    -(xx*ex+xy*ey+xz*ez),
+    -(yx*ex+yy*ey+yz*ez),
+    -(zx*ex+zy*ey+zz*ez),
+    1
+  ]);
+}
 
-    <label>Food supply: <span id="foodVal">80</span></label>
-    <input id="foodCount" type="range" min="0" max="200" step="5" value="80">
-  </div>
-  <canvas id="c"></canvas>
-
-  <script type="module">
-    const canvas = document.querySelector("#c");
-    const timeSlider = document.getElementById("timeSpeed");
-    const bacSlider = document.getElementById("bacCount");
-    const foodSlider = document.getElementById("foodCount");
-    const timeVal = document.getElementById("timeVal");
-    const bacVal = document.getElementById("bacVal");
-    const foodVal = document.getElementById("foodVal");
-
-    timeSlider.oninput = () => timeVal.textContent = (+timeSlider.value).toFixed(1);
-    bacSlider.oninput = () => bacVal.textContent = bacSlider.value;
-    foodSlider.oninput = () => foodVal.textContent = foodSlider.value;
-
-    const vec3 = {
-      sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
-      add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
-      scale:(v,s)=>[v[0]*s,v[1]*s,v[2]*s],
-      len:(v)=>Math.hypot(v[0],v[1],v[2]),
-      norm:(v)=>{const l=Math.hypot(v[0],v[1],v[2]);return l>0?[v[0]/l,v[1]/l,v[2]/l]:[0,0,0];},
-      dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
-      cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]]
-    };
-
-    function mat4_lookAt(eye, target, up) {
-      const z = vec3.norm(vec3.sub(eye, target));
-      const x = vec3.norm(vec3.cross(up, z));
-      const y = vec3.cross(z, x);
-      return new Float32Array([
-        x[0], y[0], z[0], 0,
-        x[1], y[1], z[1], 0,
-        x[2], y[2], z[2], 0,
-        -vec3.dot(x, eye), -vec3.dot(y, eye), -vec3.dot(z, eye), 1
-      ]);
+/* -----------------------------------------------------------
+   SECTION 2: Capsule Geometry (Low-Medium Poly)
+----------------------------------------------------------- */
+function createCapsule(radius=0.05, halfLen=0.1, seg=8) {
+  const verts=[];
+  for(let i=0;i<=seg;i++){
+    const v=i/seg, y=-halfLen + 2*halfLen*v;
+    const r=radius;
+    for(let j=0;j<=seg;j++){
+      const u=j/seg, th=u*Math.PI*2;
+      verts.push(r*Math.cos(th), y, r*Math.sin(th));
     }
-    function mat4_perspective(fov, aspect, near, far) {
-      const f = 1.0 / Math.tan(fov / 2);
-      const nf = 1 / (near - far);
-      return new Float32Array([
-        f/aspect, 0, 0, 0,
-        0, f, 0, 0,
-        0, 0, far*nf, -1,
-        0, 0, (far*near)*nf, 0
-      ]);
+  }
+  return new Float32Array(verts);
+}
+
+/* -----------------------------------------------------------
+   SECTION 3: WebGPU Setup
+----------------------------------------------------------- */
+const canvas=document.getElementById("gfx");
+const adapter=await navigator.gpu.requestAdapter();
+const device=await adapter.requestDevice();
+const ctx=canvas.getContext("webgpu");
+const format=navigator.gpu.getPreferredCanvasFormat();
+ctx.configure({device,format,alphaMode:"opaque"});
+
+function resize() {
+  canvas.width=innerWidth;
+  canvas.height=innerHeight;
+}
+addEventListener("resize",resize);
+resize();
+
+/* -----------------------------------------------------------
+   SECTION 4: Shaders
+----------------------------------------------------------- */
+const shader=/*wgsl*/`
+struct Camera { viewProj: mat4x4<f32>; };
+@group(0) @binding(0) var<uniform> cam: Camera;
+
+struct Instance { pos: vec3<f32>; health: f32; };
+@group(0) @binding(1) var<storage,read> inst: array<Instance>;
+
+struct VSOut {
+  @builtin(position) pos: vec4<f32>;
+  @location(0) health: f32;
+};
+
+@vertex
+fn vsMain(@location(0) pos: vec3<f32>, @builtin(instance_index) i: u32) -> VSOut {
+  let p = inst[i].pos;
+  let world = vec4<f32>(pos + p, 1.0);
+  var out: VSOut;
+  out.pos = cam.viewProj * world;
+  out.health = inst[i].health;
+  return out;
+}
+
+@fragment
+fn fsMain(in: VSOut) -> @location(0) vec4<f32> {
+  let h = in.health;
+  return vec4<f32>(0.2 + h*0.8, 0.4*h, 0.1, 1.0);
+}
+`;
+
+/* -----------------------------------------------------------
+   SECTION 5: Pipeline and Buffers
+----------------------------------------------------------- */
+const module=device.createShaderModule({code:shader});
+const verts=createCapsule();
+const vbuf=device.createBuffer({
+  size:verts.byteLength, usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST
+});
+device.queue.writeBuffer(vbuf,0,verts);
+
+const MAX=100;
+let instances=new Float32Array(MAX*4); // pos.xyz, health
+const instBuf=device.createBuffer({
+  size:instances.byteLength,
+  usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST
+});
+
+const camBuf=device.createBuffer({
+  size:64, usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST
+});
+
+const bind=device.createBindGroup({
+  layout:device.createBindGroupLayout({
+    entries:[
+      {binding:0,visibility:GPUShaderStage.VERTEX,buffer:{type:"uniform"}},
+      {binding:1,visibility:GPUShaderStage.VERTEX,buffer:{type:"read-only-storage"}}
+    ]
+  }),
+  entries:[
+    {binding:0,resource:{buffer:camBuf}},
+    {binding:1,resource:{buffer:instBuf}}
+  ]
+});
+
+const pipeline=device.createRenderPipeline({
+  layout:device.createPipelineLayout({bindGroupLayouts:[bind.getBindGroupLayout()]}),
+  vertex:{
+    module,entryPoint:"vsMain",
+    buffers:[{arrayStride:12,attributes:[{shaderLocation:0,offset:0,format:"float32x3"}]}]
+  },
+  fragment:{module,entryPoint:"fsMain",targets:[{format}]},
+  primitive:{topology:"triangle-strip"},
+  depthStencil:{format:"depth24plus",depthWriteEnabled:true,depthCompare:"less"}
+});
+
+const depthTex=()=>device.createTexture({
+  size:[canvas.width,canvas.height],
+  format:"depth24plus",
+  usage:GPUTextureUsage.RENDER_ATTACHMENT
+});
+
+/* -----------------------------------------------------------
+   SECTION 6: Simulation State
+----------------------------------------------------------- */
+let count=50;
+function reset() {
+  for(let i=0;i<count;i++){
+    const idx=i*4;
+    instances[idx+0]=(Math.random()-0.5)*1.5;
+    instances[idx+1]=(Math.random()-0.5)*1.5;
+    instances[idx+2]=(Math.random()-0.5)*1.5;
+    instances[idx+3]=1.0;
+  }
+}
+reset();
+
+/* -----------------------------------------------------------
+   SECTION 7: Camera Control (Trackball)
+----------------------------------------------------------- */
+let yaw=0.6, pitch=0.6, dist=3.0;
+let dragging=false, lx=0, ly=0;
+
+canvas.addEventListener("mousedown",e=>{dragging=true; lx=e.clientX; ly=e.clientY;});
+addEventListener("mouseup",()=>dragging=false);
+addEventListener("mousemove",e=>{
+  if(!dragging)return;
+  const dx=e.clientX-lx, dy=e.clientY-ly;
+  lx=e.clientX; ly=e.clientY;
+  yaw+=dx*0.005;
+  pitch+=dy*0.005;
+  pitch=Math.max(-1.5,Math.min(1.5,pitch));
+});
+canvas.addEventListener("wheel",e=>{
+  dist*=1+e.deltaY*0.001;
+  dist=Math.max(1.0,Math.min(10.0,dist));
+});
+
+/* -----------------------------------------------------------
+   SECTION 8: UI
+----------------------------------------------------------- */
+const slider=document.getElementById("countSlider");
+const label=document.getElementById("countLabel");
+slider.oninput=()=>{
+  count=parseInt(slider.value);
+  label.textContent=count;
+  reset();
+};
+document.getElementById("resetBtn").onclick=reset;
+
+/* -----------------------------------------------------------
+   SECTION 9: Main Loop
+----------------------------------------------------------- */
+let depth=depthTex();
+function frame() {
+  if(depth.width!==canvas.width||depth.height!==canvas.height) depth=depthTex();
+
+  for(let i=0;i<count;i++){
+    const idx=i*4;
+    instances[idx+0]+= (Math.random()-0.5)*0.01;
+    instances[idx+1]+= (Math.random()-0.5)*0.01;
+    instances[idx+2]+= (Math.random()-0.5)*0.01;
+    instances[idx+3]-=0.001;
+    if(instances[idx+3]<=0){
+      instances[idx+0]=(Math.random()-0.5)*1.5;
+      instances[idx+1]=(Math.random()-0.5)*1.5;
+      instances[idx+2]=(Math.random()-0.5)*1.5;
+      instances[idx+3]=1.0;
     }
-    function mat4_mul(a,b){
-      const o=new Float32Array(16);
-      for(let c=0;c<4;c++){
-        for(let r=0;r<4;r++){
-          o[c*4+r]=a[0*4+r]*b[c*4+0]+a[1*4+r]*b[c*4+1]+a[2*4+r]*b[c*4+2]+a[3*4+r]*b[c*4+3];
-        }
-      }
-      return o;
+  }
+  device.queue.writeBuffer(instBuf,0,instances);
+
+  const eye=[
+    Math.cos(yaw)*Math.cos(pitch)*dist,
+    Math.sin(pitch)*dist,
+    Math.sin(yaw)*Math.cos(pitch)*dist
+  ];
+  const vp=mat4Perspective(1.0,canvas.width/canvas.height,0.1,20.0);
+  const view=mat4LookAt(eye,[0,0,0],[0,1,0]);
+  const vpv=new Float32Array(16);
+  for(let i=0;i<4;i++)for(let j=0;j<4;j++)
+    vpv[i*4+j]=vp[i*4+0]*view[j+0]+vp[i*4+1]*view[j+4]+vp[i*4+2]*view[j+8]+vp[i*4+3]*view[j+12];
+  device.queue.writeBuffer(camBuf,0,vpv);
+
+  const encoder=device.createCommandEncoder();
+  const pass=encoder.beginRenderPass({
+    colorAttachments:[{
+      view:ctx.getCurrentTexture().createView(),
+      loadOp:"clear",storeOp:"store",
+      clearValue:{r:0.05,g:0.05,b:0.05,a:1}
+    }],
+    depthStencilAttachment:{
+      view:depth.createView(),
+      depthLoadOp:"clear",depthStoreOp:"store",
+      depthClearValue:1.0
     }
-
-    async function init() {
-      if (!navigator.gpu) { alert("WebGPU not supported"); return; }
-      const adapter = await navigator.gpu.requestAdapter();
-      const device = await adapter.requestDevice();
-      const context = canvas.getContext("webgpu");
-      const format = navigator.gpu.getPreferredCanvasFormat();
-      canvas.width = innerWidth; canvas.height = innerHeight;
-      context.configure({ device, format, alphaMode:"opaque" });
-
-      // --- Geometry: pill capsule (cylinder + hemispheres) ---
-      function createCapsule(radius=0.1, halfLen=0.25, seg=12) {
-        const verts = [];
-        const indices = [];
-        // simple low-poly capsule: approximate with stretched sphere
-        const lat = seg*2, lon = seg;
-        for (let y=0;y<=lat;y++){
-          const v=y/lat, th=v*Math.PI;
-          for(let x=0;x<=lon;x++){
-            const u=x/lon, ph=u*Math.PI*2;
-            const sx=Math.sin(th)*Math.cos(ph);
-            const sy=Math.cos(th);
-            const sz=Math.sin(th)*Math.sin(ph);
-            const px = sx*radius;
-            const py = sy*radius*0.6; // squash a bit
-            const pz = sz*radius;
-            const offset = sy>0?halfLen: -halfLen;
-            verts.push(px, py+offset, pz);
-          }
-        }
-        for(let y=0;y<lat;y++){
-          for(let x=0;x<lon;x++){
-            const a=y*(lon+1)+x;
-            const b=a+lon+1;
-            indices.push(a,b,a+1,b,b+1,a+1);
-          }
-        }
-        return {pos:new Float32Array(verts), ind:new Uint16Array(indices)};
-      }
-
-      // Wireframe cube lines
-      function createCubeLines(size=2.5){
-        const s=size;
-        const pts=[
-          [-s,-s,-s],[ s,-s,-s],[ s, s,-s],[-s, s,-s],
-          [-s,-s, s],[ s,-s, s],[ s, s, s],[-s, s, s]
-        ];
-        const edges=[
-          [0,1],[1,2],[2,3],[3,0],
-          [4,5],[5,6],[6,7],[7,4],
-          [0,4],[1,5],[2,6],[3,7]
-        ];
-        const v=[];
-        for(const [a,b] of edges){
-          v.push(...pts[a],...pts[b]);
-        }
-        return new Float32Array(v);
-      }
-
-      const capsule = createCapsule();
-      const cubeLines = createCubeLines(2.5);
-
-      const capsuleVB = device.createBuffer({
-        size: capsule.pos.byteLength,
-        usage: GPUBufferUsage.VERTEX,
-        mappedAtCreation: true
-      });
-      new Float32Array(capsuleVB.getMappedRange()).set(capsule.pos);
-      capsuleVB.unmap();
-
-      const capsuleIB = device.createBuffer({
-        size: capsule.ind.byteLength,
-        usage: GPUBufferUsage.INDEX,
-        mappedAtCreation: true
-      });
-      new Uint16Array(capsuleIB.getMappedRange()).set(capsule.ind);
-      capsuleIB.unmap();
-
-      const cubeVB = device.createBuffer({
-        size: cubeLines.byteLength,
-        usage: GPUBufferUsage.VERTEX,
-        mappedAtCreation: true
-      });
-      new Float32Array(cubeVB.getMappedRange()).set(cubeLines);
-      cubeVB.unmap();
-
-      const MAX_BAC = 300;
-      const MAX_FOOD = 300;
-
-      // instance data: mat3x3 orientation + position + health
-      const bacStride = 16 * 4; // 4 vec4 (we'll pack orientation+pos+health)
-      const bacInstB = device.createBuffer({
-        size: MAX_BAC * bacStride,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-      });
-
-      const foodStride = 4 * 4; // vec4: xyz + size
-      const foodInstB = device.createBuffer({
-        size: MAX_FOOD * foodStride,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST
-      });
-
-      const camB = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      const simB = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-
-      const shader = device.createShaderModule({
-        code: /* wgsl */`
-          struct Cam { vp: mat4x4f };
-          struct Sim { time: f32, pad0: f32, pad1: f32, pad2: f32 };
-          @group(0) @binding(0) var<uniform> cam : Cam;
-          @group(0) @binding(1) var<uniform> sim : Sim;
-
-          struct VSOut {
-            @builtin(position) pos: vec4f,
-            @location(0) col: vec3f
-          };
-
-          // Bacteria capsule
-          @vertex
-          fn vs_bac(
-            @location(0) p: vec3f,
-            @location(1) i0: vec4f,
-            @location(2) i1: vec4f,
-            @location(3) i2: vec4f,
-            @location(4) i3: vec4f
-          ) -> VSOut {
-            var o: VSOut;
-            let right = i0.xyz;
-            let up    = i1.xyz;
-            let forward = i2.xyz;
-            let pos = i3.xyz;
-            let health = i3.w;
-
-            // simple flagella wiggle: modulate vertex along right/up by sin(time+z)
-            let wiggle = 0.1 * sin(sim.time*4.0 + p.z*10.0);
-            let local = p + (right * wiggle);
-
-            let world = pos + right*local.x + up*local.y + forward*local.z;
-            o.pos = cam.vp * vec4f(world, 1.0);
-
-            let baseCol = vec3f(0.2, 0.8, 0.3);
-            let h = clamp(health, 0.0, 1.0);
-            o.col = mix(vec3f(0.3,0.1,0.1), baseCol, h);
-            return o;
-          }
-
-          @fragment
-          fn fs_bac(in: VSOut) -> @location(0) vec4f {
-            return vec4f(in.col, 1.0);
-          }
-
-          // Food: simple points as small quads
-          @vertex
-          fn vs_food(
-            @location(0) p: vec3f,
-            @location(1) inst: vec4f
-          ) -> VSOut {
-            var o: VSOut;
-            let pos = inst.xyz;
-            let size = inst.w;
-            let world = pos + p * size;
-            o.pos = cam.vp * vec4f(world, 1.0);
-            o.col = vec3f(1.0, 0.9, 0.2);
-            return o;
-          }
-
-          @fragment
-          fn fs_food(in: VSOut) -> @location(0) vec4f {
-            return vec4f(in.col, 1.0);
-          }
-
-          // Wireframe cube
-          @vertex
-          fn vs_cube(@location(0) p: vec3f) -> VSOut {
-            var o: VSOut;
-            o.pos = cam.vp * vec4f(p, 1.0);
-            o.col = vec3f(0.3,0.6,0.9);
-            return o;
-          }
-
-          @fragment
-          fn fs_cube(in: VSOut) -> @location(0) vec4f {
-            return vec4f(in.col, 1.0);
-          }
-        `
-      });
-
-      const bacPipeline = device.createRenderPipeline({
-        layout: "auto",
-        vertex: {
-          module: shader,
-          entryPoint: "vs_bac",
-          buffers: [
-            { // capsule vertices
-              arrayStride: 12,
-              attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }]
-            },
-            { // instance: 4 vec4
-              arrayStride: bacStride,
-              stepMode: "instance",
-              attributes: [
-                { shaderLocation: 1, offset: 0,  format: "float32x4" },
-                { shaderLocation: 2, offset: 16, format: "float32x4" },
-                { shaderLocation: 3, offset: 32, format: "float32x4" },
-                { shaderLocation: 4, offset: 48, format: "float32x4" }
-              ]
-            }
-          ]
-        },
-        fragment: {
-          module: shader,
-          entryPoint: "fs_bac",
-          targets: [{ format }]
-        },
-        primitive: { topology: "triangle-list", cullMode: "back" },
-        depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
-      });
-
-      const foodPipeline = device.createRenderPipeline({
-        layout: "auto",
-        vertex: {
-          module: shader,
-          entryPoint: "vs_food",
-          buffers: [
-            { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
-            { arrayStride: foodStride, stepMode: "instance",
-              attributes: [{ shaderLocation: 1, offset: 0, format: "float32x4" }] }
-          ]
-        },
-        fragment: { module: shader, entryPoint: "fs_food", targets: [{ format }] },
-        primitive: { topology: "triangle-list", cullMode: "back" },
-        depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
-      });
-
-      const cubePipeline = device.createRenderPipeline({
-        layout: "auto",
-        vertex: {
-          module: shader,
-          entryPoint: "vs_cube",
-          buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }]
-        },
-        fragment: { module: shader, entryPoint: "fs_cube", targets: [{ format }] },
-        primitive: { topology: "line-list", cullMode: "none" },
-        depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }
-      });
-
-      const bindGroupLayout = bacPipeline.getBindGroupLayout(0);
-      const bindGroup = device.createBindGroup({
-        layout: bindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: camB } },
-          { binding: 1, resource: { buffer: simB } }
-        ]
-      });
-
-      let depthTex = device.createTexture({
-        size: [canvas.width, canvas.height],
-        format: "depth24plus",
-        usage: GPUTextureUsage.RENDER_ATTACHMENT
-      });
-
-      // --- Simulation state ---
-      const boxSize = 2.5;
-      const bacteria = [];
-      const food = [];
-
-      function randInBox() {
-        return [
-          (Math.random()*2-1)*boxSize*0.9,
-          (Math.random()*2-1)*boxSize*0.9,
-          (Math.random()*2-1)*boxSize*0.9
-        ];
-      }
-
-      function spawnBacterium() {
-        const pos = randInBox();
-        const dir = vec3.norm(randInBox());
-        bacteria.push({
-          pos,
-          dir,
-          speed: 0.4 + Math.random()*0.3,
-          health: 0.5 + Math.random()*0.5
-        });
-      }
-      function spawnFood() {
-        food.push({
-          pos: randInBox(),
-          size: 0.05 + Math.random()*0.03
-        });
-      }
-
-      for (let i=0;i<50;i++) spawnBacterium();
-      for (let i=0;i<80;i++) spawnFood();
-
-      // simple quad for food
-      const foodQuad = new Float32Array([
-        -0.05,-0.05,0,
-         0.05,-0.05,0,
-         0.05, 0.05,0,
-        -0.05,-0.05,0,
-         0.05, 0.05,0,
-        -0.05, 0.05,0
-      ]);
-      const foodVB = device.createBuffer({
-        size: foodQuad.byteLength,
-        usage: GPUBufferUsage.VERTEX,
-        mappedAtCreation: true
-      });
-      new Float32Array(foodVB.getMappedRange()).set(foodQuad);
-      foodVB.unmap();
-
-      let lastTime = performance.now()/1000;
-      let simTime = 0;
-
-      function update(dt) {
-        const timeScale = parseFloat(timeSlider.value);
-        const targetBac = parseInt(bacSlider.value,10);
-        const targetFood = parseInt(foodSlider.value,10);
-
-        dt *= timeScale;
-        simTime += dt;
-
-        // adjust counts
-        while (bacteria.length < targetBac && bacteria.length < MAX_BAC) spawnBacterium();
-        while (bacteria.length > targetBac) bacteria.pop();
-        while (food.length < targetFood && food.length < MAX_FOOD) spawnFood();
-        while (food.length > targetFood) food.pop();
-
-        // bacteria behavior
-        for (const b of bacteria) {
-          // random walk + slight steering toward nearest food
-          let steer = [0,0,0];
-          let bestDist = 999;
-          let bestFood = null;
-          for (const f of food) {
-            const d = vec3.sub(f.pos, b.pos);
-            const L = vec3.len(d);
-            if (L < bestDist && L < 1.5) { bestDist = L; bestFood = d; }
-          }
-          if (bestFood) {
-            steer = vec3.scale(vec3.norm(bestFood), 0.8);
-          }
-          const jitter = vec3.scale(randInBox(), 0.2);
-          let newDir = vec3.add(vec3.add(b.dir, vec3.scale(steer, dt)), vec3.scale(jitter, dt));
-          newDir = vec3.norm(newDir);
-          b.dir = newDir;
-
-          // move
-          b.pos = vec3.add(b.pos, vec3.scale(b.dir, b.speed*dt));
-
-          // bounce off box
-          for (let k=0;k<3;k++){
-            if (b.pos[k] > boxSize) { b.pos[k]=boxSize; b.dir[k]*=-1; }
-            if (b.pos[k] < -boxSize){ b.pos[k]=-boxSize; b.dir[k]*=-1; }
-          }
-
-          // health decay
-          b.health -= 0.03*dt;
-        }
-
-        // eating
-        for (const b of bacteria) {
-          for (let i=food.length-1;i>=0;i--){
-            const f = food[i];
-            const d = vec3.sub(f.pos, b.pos);
-            if (vec3.len(d) < 0.2) {
-              b.health = Math.min(1.2, b.health + 0.4);
-              food.splice(i,1);
-            }
-          }
-        }
-
-        // remove dead
-        for (let i=bacteria.length-1;i>=0;i--){
-          if (bacteria[i].health <= 0) bacteria.splice(i,1);
-        }
-
-        // occasional reproduction
-        for (const b of bacteria) {
-          if (b.health > 1.0 && bacteria.length < MAX_BAC && Math.random()<0.02*dt) {
-            b.health *= 0.6;
-            const child = {
-              pos: [...b.pos],
-              dir: vec3.norm(vec3.add(b.dir, randInBox())),
-              speed: b.speed*(0.9+0.2*Math.random()),
-              health: 0.6
-            };
-            bacteria.push(child);
-          }
-        }
-
-        // write sim uniform
-        const simData = new Float32Array([simTime,0,0,0]);
-        device.queue.writeBuffer(simB, 0, simData);
-      }
-
-      function render() {
-        const now = performance.now()/1000;
-        const dt = now - lastTime;
-        lastTime = now;
-        update(dt);
-
-        const target = [0,0,0];
-        const radius = 7;
-        const eye = [Math.sin(simTime*0.1)*radius, radius*0.4, Math.cos(simTime*0.1)*radius];
-        const view = mat4_lookAt(eye, target, [0,1,0]);
-        const proj = mat4_perspective(1.0, canvas.width/canvas.height, 0.1, 100);
-        const vp = mat4_mul(proj, view);
-        device.queue.writeBuffer(camB, 0, vp);
-
-        // instance data for bacteria
-        const bacData = new Float32Array(MAX_BAC * (bacStride/4));
-        for (let i=0;i<bacteria.length;i++){
-          const b = bacteria[i];
-          const forward = b.dir;
-          const up = [0,1,0];
-          let right = vec3.cross(up, forward);
-          if (vec3.len(right)<0.001) right=[1,0,0];
-          right = vec3.norm(right);
-          const realUp = vec3.cross(forward, right);
-
-          const base = i*16;
-          bacData.set([...right,0], base+0);
-          bacData.set([...realUp,0], base+4);
-          bacData.set([...forward,0], base+8);
-          bacData.set([...b.pos, b.health], base+12);
-        }
-        device.queue.writeBuffer(bacInstB, 0, bacData);
-
-        // instance data for food
-        const foodData = new Float32Array(MAX_FOOD * (foodStride/4));
-        for (let i=0;i<food.length;i++){
-          const f = food[i];
-          const base = i*4;
-          foodData.set([f.pos[0], f.pos[1], f.pos[2], f.size], base);
-        }
-        device.queue.writeBuffer(foodInstB, 0, foodData);
-
-        const encoder = device.createCommandEncoder();
-        const pass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: context.getCurrentTexture().createView(),
-            clearValue: [0.03,0.03,0.06,1],
-            loadOp: "clear",
-            storeOp: "store"
-          }],
-          depthStencilAttachment: {
-            view: depthTex.createView(),
-            depthClearValue: 1,
-            depthLoadOp: "clear",
-            depthStoreOp: "store"
-          }
-        });
-
-        pass.setBindGroup(0, bindGroup);
-
-        // cube
-        pass.setPipeline(cubePipeline);
-        pass.setVertexBuffer(0, cubeVB);
-        pass.draw(cubeLines.length/3);
-
-        // food
-        pass.setPipeline(foodPipeline);
-        pass.setVertexBuffer(0, foodVB);
-        pass.setVertexBuffer(1, foodInstB);
-        pass.draw(6, food.length);
-
-        // bacteria
-        pass.setPipeline(bacPipeline);
-        pass.setVertexBuffer(0, capsuleVB);
-        pass.setVertexBuffer(1, bacInstB);
-        pass.setIndexBuffer(capsuleIB, "uint16");
-        pass.drawIndexed(capsule.ind.length, bacteria.length);
-
-        pass.end();
-        device.queue.submit([encoder.finish()]);
-        requestAnimationFrame(render);
-      }
-      render();
-    }
-    init();
-  </script>
+  });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0,bind);
+  pass.setVertexBuffer(0,vbuf);
+  pass.draw(verts.length/3,count);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
 </body>
 </html>
